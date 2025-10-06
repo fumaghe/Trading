@@ -12,12 +12,13 @@ jobs:
       PYTHONIOENCODING: "utf-8"
       TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
       TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
       - name: Run only at 08:30 Europe/Rome
-        if: ${{ github.event_name == 'schedule' }}   
+        if: ${{ github.event_name == 'schedule' }}
         run: |
           NOW=$(TZ=Europe/Rome date +'%H:%M')
           echo "Europe/Rome now: $NOW"
@@ -45,60 +46,62 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          # Comando come richiesto
-          CMD="python test3.py --seed-from perps --workers 12 --min-liq 200000 --max-tickers-scan 40 --dominance 0.30 --skip-unchanged-days 0 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100"
-          echo "Running: $CMD"
-          # Salva stdout/stderr separati (max ~4k char per Telegram)
-          OUTFILE=out.txt
-          ERRFILE=err.txt
-          # Forza locale UTF-8
           export LC_ALL=C.UTF-8
           export LANG=C.UTF-8
 
-          # Esecuzione
-          bash -lc "$CMD" > $OUTFILE 2> $ERRFILE || true
-          CODE=$?
-          echo "exit_code=$CODE" >> $GITHUB_OUTPUT
+          CMD="python test3.py --seed-from perps --workers 12 --min-liq 200000 --max-tickers-scan 40 --dominance 0.30 --skip-unchanged-days 0 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100"
+          echo "Running: $CMD"
 
-          # Prepara messaggio
+          OUTFILE=out.txt
+          ERRFILE=err.txt
+
+          bash -lc "$CMD" >"$OUTFILE" 2>"$ERRFILE" || true
+          CODE=$?
+          echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
+
           MSG_HEADER="✅ Screener OK"
           [ $CODE -ne 0 ] && MSG_HEADER="❌ Screener ERROR ($CODE)"
 
-          # Unisci e tronca a ~3900 char
-          MSG_BODY="$(cat $OUTFILE)"
+          MSG_BODY="$(cat "$OUTFILE")"
           if [ -s "$ERRFILE" ]; then
-            MSG_BODY="$MSG_BODY\n\n--- STDERR ---\n$(cat $ERRFILE)"
+            MSG_BODY="${MSG_BODY}"$'\n''### STDERR ###'$'\n'"$(cat "$ERRFILE")"
           fi
-          # Rimuovi caratteri non stampabili per sicurezza
-          MSG_BODY="$(echo -e "$MSG_BODY" | tr -d '\000')"
 
-          # Tronca
+          # ripulisci e tronca (Telegram <=4096)
+          MSG_BODY="$(printf "%s" "$MSG_BODY" | tr -d '\000')"
           MAX=3900
           LEN=$(printf "%s" "$MSG_BODY" | wc -c)
           if [ "$LEN" -gt "$MAX" ]; then
             MSG_BODY="$(printf "%s" "$MSG_BODY" | head -c $MAX)"
-            MSG_BODY="$MSG_BODY\n\n…(troncato)"
+            MSG_BODY="${MSG_BODY}"$'\n\n''...(troncato)'
           fi
 
-          # Esporta per step successivo
-          echo "msg_header<<EOF" >> $GITHUB_OUTPUT
-          echo "$MSG_HEADER"     >> $GITHUB_OUTPUT
-          echo "EOF"              >> $GITHUB_OUTPUT
-
-          echo "msg_body<<EOF"   >> $GITHUB_OUTPUT
-          echo -e "$MSG_BODY"    >> $GITHUB_OUTPUT
-          echo "EOF"             >> $GITHUB_OUTPUT
+          {
+            echo "msg_header<<EOF"
+            echo "$MSG_HEADER"
+            echo "EOF"
+            echo "msg_body<<EOF"
+            echo "$MSG_BODY"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Send Telegram message
         if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
         run: |
           API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
-          # Usa application/x-www-form-urlencoded per evitare problemi json/escaping
-          TEXT="${{ steps.screener.outputs.msg_header }}%0A%0A${{ steps.screener.outputs.msg_body }}"
-          # Sostituisci %0A per newline corrette, url-encoded già ok
+          TEXT="$(printf "%s\n\n%s" "${{ steps.screener.outputs.msg_header }}" "${{ steps.screener.outputs.msg_body }}")"
           curl -sS -X POST "$API" \
-            -d "chat_id=${TG_CHAT_ID}" \
-            -d "text=$TEXT" \
+            --data-urlencode "chat_id=${TG_CHAT_ID}" \
+            --data-urlencode "text=$TEXT" \
             -d "disable_web_page_preview=true" \
             -d "parse_mode=HTML" \
           || echo "Telegram send failed"
+
+      - name: Upload logs (artifact)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: screener-logs
+          path: |
+            out.txt
+            err.txt

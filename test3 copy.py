@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Crypto Screener (v2.3.1) — 3 criteri + funnel, cache-aware & robust, PERPS-FIRST
+Crypto Screener (v2.3) — 3 criteri + funnel, cache-aware & robust, PERPS-FIRST
 
 Criteri attivi:
   1) CEX spot principale per volume = Bitget (tickers CoinGecko)
@@ -16,11 +16,12 @@ Novità v2.3:
 - Filtri qualità tickers CG (stale/anomaly e trust≠green/yellow).
 - Stato persistente thread-safe (lock) per evitare write races.
 
-v2.3.1:
-- FIX: con --skip-unchanged-days 0 non si skippa nulla (ricontrolla sempre).
-- Aggiunto report testuale “Telegram-friendly” a fine esecuzione (niente tabelle).
-"""
+Requisiti: requests, tenacity, rich
+  pip install requests tenacity rich
 
+python test3.py --seed-from perps --workers 12 --min-liq 200000 --max-tickers-scan 40 --dominance 0.30 --skip-unchanged-days 0 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100
+
+"""
 from __future__ import annotations
 import argparse
 import json
@@ -321,7 +322,7 @@ def top_spot_cex_bitget_ok(coin: Dict[str, Any], dominance: float, max_scan: int
             break
     return (best_name or "").lower().startswith("bitget"), best_name
 
-# /coins/list?include_platform=true  --> mappa SYMBOL -> id, preferendo chi ha BSC
+# /coins/list?include_platform=true  --> per mappare SYMBOL -> id preferendo chi ha BSC
 def load_cg_coins_list_cached(cg_rl: RateLimiter) -> List[Dict[str, Any]]:
     cache_path = joinp(settings.cache_root, "coingecko", "coins_list_include_platform.json")
     j = cache_get(cache_path, settings.ttl_cg_coin_sec)
@@ -339,23 +340,25 @@ def choose_best_cg_id_for_symbol(symbol: str, cg_list: List[Dict[str, Any]]) -> 
     Heuristica:
       1) match case-insensitive su symbol; se più entry:
          - preferisci quelle con 'binance-smart-chain' nei platforms
-         - altrimenti prendi la prima occorrenza
+         - altrimenti prendi la prima occorrenza stabile
     """
     sym_up = symbol.upper()
     candidates = []
     for row in cg_list:
         sym = (row.get("symbol") or "").upper()
-        if sym != sym_up:
+        if sym != sym_up: 
             continue
         name = row.get("name") or ""
-        platforms = (row.get("platforms") or {})
+        platforms = (row.get("platforms") or {})  # se include_platform=true
         has_bsc = any(k.lower() in ("binance-smart-chain", "bsc", "bnb", "bnb-smart-chain") for k in platforms.keys())
         candidates.append((row.get("id"), name, has_bsc))
     if not candidates:
         return None
+    # preferisci chi ha BSC
     for cid, name, has_bsc in candidates:
         if has_bsc:
             return cid, name
+    # fallback: prima entry
     cid, name, _ = candidates[0]
     return cid, name
 
@@ -402,11 +405,7 @@ def save_state(state: Dict[str, Any]):
     write_json(state_path(), state)
 
 def stale_by_days(ts: Optional[int], days: int) -> bool:
-    # FIX: se days <= 0 allora NON skippiamo mai (sempre "stale" => rielabora)
-    if days <= 0:
-        return True
-    if not ts:
-        return True
+    if not ts: return True
     return (now_ts() - ts) > days * 86400
 
 # --------------------------- Screening --------------------------- #
@@ -547,8 +546,6 @@ def list_market_id_symbols(pages: int, per_page: int, cg_rl: RateLimiter) -> Lis
             if cid: rows.append((cid, sym))
     return rows
 
-
-
 def build_seed_from_perps(cg_rl: RateLimiter,
                           binance_bases: Dict[str, Any],
                           bybit_bases: Dict[str, Any]) -> List[Tuple[str, str]]:
@@ -587,7 +584,7 @@ def build_seed_from_perps(cg_rl: RateLimiter,
 
     return mapped  # [(cg_id, symbol)]
 
-# --------------------------- Rendering (terminal) --------------------------- #
+# --------------------------- Rendering --------------------------- #
 
 def _print_stage_list(title: str, rows: List[FunnelRow], show: int, extra_cols: Optional[List[Tuple[str, str]]] = None):
     if not rows:
@@ -677,65 +674,6 @@ def print_results(results: List[CheckResult], funnel_rows: List[FunnelRow], tota
         for r in at_least2:
             print(f"{r.symbol:6} | {r.name:24} | Top CEX: {r.top_spot_cex}")
 
-# --------------------------- Telegram-friendly text --------------------------- #
-
-def build_telegram_report(results: List[CheckResult], funnel_rows: List[FunnelRow], total_candidates: int) -> str:
-    total_skipped = sum(1 for r in funnel_rows if r.skipped)
-    processed = [r for r in funnel_rows if not r.skipped]
-    s1 = [r for r in processed if r.s1_perps]
-    s2 = [r for r in processed if r.s1_perps and r.s2_bitget]
-    s3 = [r for r in processed if r.s1_perps and r.s2_bitget and r.s3_bsc_pancake]
-
-    all3 = [r for r in results if r.score() >= 2 and r.ok()]  # 2 OK: Bitget + Pancake
-    at_least2 = [r for r in funnel_rows if (not r.skipped and r.s1_perps and r.s2_bitget)]
-
-    def head(title: str) -> str:
-        return f"\n— {title} —\n"
-
-    def list_rows(rows: List[FunnelRow], limit: int = 25, extra: bool = False) -> str:
-        out = []
-        for r in rows[:limit]:
-            if extra and r.lp_pair:
-                liq = r.lp_pair.get("liquidityUsd")
-                out.append(f"{r.symbol} · {r.name} · LP: {int(liq):,}$".replace(",", "."))
-            else:
-                out.append(f"{r.symbol} · {r.name}")
-        if len(rows) > limit:
-            out.append(f"... (+{len(rows)-limit})")
-        return "\n".join(out) if out else "—"
-
-    lines = []
-    lines.append(f"Funnel\nCandidati: {total_candidates} | Processati: {len(processed)} | Skippati: {total_skipped}")
-
-    lines.append(head("Stage 1 — Perps su entrambi"))
-    lines.append(list_rows(s1, 15))
-
-    lines.append(head("Stage 1+2 — Top spot = Bitget"))
-    lines.append(list_rows(s2, 15))
-
-    lines.append(head("Stage 1+2+3 — BSC Pancake (main LP)"))
-    lines.append(list_rows(s3, 25, extra=True))
-
-    lines.append(head("Tutti e 3 i parametri (TOP)"))
-    if all3:
-        out = []
-        for r in all3[:25]:
-            lp = r.extra.get("lp_pair", {}) if r.extra else {}
-            liq = lp.get("liquidityUsd")
-            out.append(f"{r.symbol} · {r.name} · LP: {int(liq):,}$".replace(",", "."))
-        if len(all3) > 25:
-            out.append(f"... (+{len(all3)-25})")
-        lines.append("\n".join(out))
-    else:
-        lines.append("—")
-
-    lines.append(head("Almeno S1+S2"))
-    lines.append("\n".join([f"{r.symbol} · {r.name}" for r in at_least2[:25]]) if at_least2 else "—")
-    if len(at_least2) > 25:
-        lines.append(f"... (+{len(at_least2)-25})")
-
-    return "\n".join(lines)
-
 # --------------------------- CLI --------------------------- #
 
 def parse_args() -> Settings:
@@ -748,7 +686,7 @@ def parse_args() -> Settings:
     ap.add_argument("--min-liq", type=float, default=150000.0)
     ap.add_argument("--require-v3", action="store_true", help="Accetta solo LP Pancake v3")
 
-    # compat flags non usati (mantenuti)
+    # (compat flags non usati in questa versione, mantenuti per retro-compat)
     ap.add_argument("--price-mult", type=float, default=3.0, help=argparse.SUPPRESS)
     ap.add_argument("--max-ticks-above", type=int, default=0, help=argparse.SUPPRESS)
     ap.add_argument("--ttl-sg", type=int, default=24*3600, help=argparse.SUPPRESS)
@@ -881,14 +819,9 @@ def main():
                 funnel_rows.append(fr)
                 if res: results.append(res)
 
-    # Salva stato e stampa terminal
+    # Salva stato e stampa
     save_state(state)
     print_results(results, funnel_rows, total_candidates=len(id_syms))
-
-    # --- Telegram-friendly block (sempre stampato in chiaro) ---
-    report = build_telegram_report(results, funnel_rows, total_candidates=len(id_syms))
-    print("\n==================== TELEGRAM REPORT ====================\n")
-    print(report)
 
 if __name__ == "__main__":
     main()
