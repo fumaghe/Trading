@@ -1,0 +1,27 @@
+name: Daily Screener (bash)
+
+on:
+  schedule:
+    - cron: "30 7 * * *"   # 08:30 CET inverno (UTC+1) -> 07:30 UTC
+  workflow_dispatch:        # per avviarlo a mano
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          pip install requests tenacity rich
+
+      - name: Run screener and notify (bash)
+        run: |
+          chmod +x ./run_and_notify.sh
+          ./run_and_notify.sh
