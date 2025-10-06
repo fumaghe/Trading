@@ -1,10 +1,8 @@
 name: Daily Screener (bash)
 
 on:
-  # Pianifica: ogni ora al minuto 30, ma poi filtra per 08:30 Europe/Rome nel job
   schedule:
     - cron: "30 * * * *"
-  # Lancio manuale opzionale
   workflow_dispatch: {}
 
 jobs:
@@ -19,6 +17,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run only at 08:30 Europe/Rome
+        if: ${{ github.event_name == 'schedule' }}   
         run: |
           NOW=$(TZ=Europe/Rome date +'%H:%M')
           echo "Europe/Rome now: $NOW"
