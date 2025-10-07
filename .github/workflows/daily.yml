@@ -2,7 +2,7 @@ name: Daily Screener (bash)
 
 on:
   schedule:
-    - cron: "30 * * * *"   # trigger ogni ora al minuto 30; il gating sotto limita a 09:30 e 17:30 Europe/Rome
+    - cron: "30 * * * *"   # trigger ogni ora al minuto 30; gating limita a 09:30 e 17:30 Europe/Rome
   workflow_dispatch: {}
 
 permissions:
@@ -20,7 +20,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0         # necessario per poter fare push
+          fetch-depth: 0
           persist-credentials: true
 
       - name: Run only at 09:30 and 17:30 Europe/Rome
@@ -65,39 +65,50 @@ jobs:
           CODE=$?
           echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
 
-          # Rileva i due file Telegram generati dallo script
+          # File generati dallo script (telegram-friendly)
           SEED_FILE="state/telegram/seed.txt"
           ALL3_FILE="state/telegram/all3.txt"
 
-          if [ -f "$SEED_FILE" ]; then
+          # Sanifica da eventuali NUL
+          mkdir -p state/telegram
+          SAN_SEED="state/telegram/seed.sanitized.txt"
+          SAN_ALL3="state/telegram/all3.sanitized.txt"
+          [ -f "$SEED_FILE" ] && tr -d '\000' < "$SEED_FILE" > "$SAN_SEED"
+          [ -f "$ALL3_FILE" ] && tr -d '\000' < "$ALL3_FILE" > "$SAN_ALL3"
+
+          # Usa delimitatori unici per evitare collisioni con il contenuto
+          DELIM_SEED="EOF_SEED_$(date +%s%N)"
+          DELIM_ALL3="EOF_ALL3_$(date +%s%N)"
+
+          if [ -f "$SAN_SEED" ]; then
             {
-              echo "msg_seed<<EOF"
-              cat "$SEED_FILE"
-              echo "EOF"
+              printf "msg_seed<<%s\n" "$DELIM_SEED"
+              cat "$SAN_SEED"
+              printf "\n%s\n" "$DELIM_SEED"
             } >> "$GITHUB_OUTPUT"
           else
             {
-              echo "msg_seed<<EOF"
+              printf "msg_seed<<%s\n" "$DELIM_SEED"
               echo "⚠️ Nessun seed summary generato."
-              echo "EOF"
+              printf "%s\n" "$DELIM_SEED"
             } >> "$GITHUB_OUTPUT"
           fi
 
-          if [ -f "$ALL3_FILE" ]; then
+          if [ -f "$SAN_ALL3" ]; then
             {
-              echo "msg_all3<<EOF"
-              cat "$ALL3_FILE"
-              echo "EOF"
+              printf "msg_all3<<%s\n" "$DELIM_ALL3"
+              cat "$SAN_ALL3"
+              printf "\n%s\n" "$DELIM_ALL3"
             } >> "$GITHUB_OUTPUT"
           else
             {
-              echo "msg_all3<<EOF"
+              printf "msg_all3<<%s\n" "$DELIM_ALL3"
               echo "⚠️ Nessun report TOP generato."
-              echo "EOF"
+              printf "%s\n" "$DELIM_ALL3"
             } >> "$GITHUB_OUTPUT"
           fi
 
-          # Salva header per debug locale
+          # Header locale
           if [ $CODE -eq 0 ]; then
             echo "✅ Screener OK" > header.txt
           else
@@ -105,11 +116,9 @@ jobs:
           fi
 
       - name: Persist screener state to repo
-        # Committa i file di stato per permettere il diff tra run (storico persistente)
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Aggiungi solo gli stati necessari allo storico (evita i .txt di Telegram)
           git add -A state/last_all3.json state/index.json
           git commit -m "chore(screener): update state [skip ci]" || echo "No changes to commit"
           git push || echo "Nothing to push"
