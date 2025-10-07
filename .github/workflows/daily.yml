@@ -2,7 +2,7 @@ name: Daily Screener (bash)
 
 on:
   schedule:
-    - cron: "30 * * * *"
+    - cron: "30 * * * *"   # trigger ogni ora al minuto 30 (gating sotto per 09:30 e 17:30 Europe/Rome)
   workflow_dispatch: {}
 
 jobs:
@@ -17,13 +17,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Run only at 08:30 Europe/Rome
+      - name: Run only at 09:30 and 17:30 Europe/Rome
         if: ${{ github.event_name == 'schedule' }}
         run: |
           NOW=$(TZ=Europe/Rome date +'%H:%M')
           echo "Europe/Rome now: $NOW"
-          if [ "$NOW" != "08:30" ]; then
-            echo "Not 08:30 Europe/Rome — exiting without running."
+          if [ "$NOW" != "09:30" ] && [ "$NOW" != "17:30" ]; then
+            echo "Not target time — exiting without running."
             exit 0
           fi
 
@@ -49,7 +49,7 @@ jobs:
           export LC_ALL=C.UTF-8
           export LANG=C.UTF-8
 
-          CMD="python test3.py --seed-from perps --workers 12 --min-liq 200000 --max-tickers-scan 40 --dominance 0.30 --skip-unchanged-days 0 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100"
+          CMD="python test3.py --seed-from perps --workers 12 --min-liq 200000 --max-tickers-scan 40 --dominance 0.30 --skip-unchanged-days 0 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 50"
           echo "Running: $CMD"
 
           OUTFILE=out.txt
@@ -59,43 +59,66 @@ jobs:
           CODE=$?
           echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
 
-          MSG_HEADER="✅ Screener OK"
-          [ $CODE -ne 0 ] && MSG_HEADER="❌ Screener ERROR ($CODE)"
+          # Rileva i due file Telegram generati dallo script
+          SEED_FILE="state/telegram/seed.txt"
+          ALL3_FILE="state/telegram/all3.txt"
 
-          MSG_BODY="$(cat "$OUTFILE")"
-          if [ -s "$ERRFILE" ]; then
-            MSG_BODY="${MSG_BODY}"$'\n''### STDERR ###'$'\n'"$(cat "$ERRFILE")"
+          # Prepara header in base al codice di uscita
+          MSG_HEADER_OK="✅ Screener OK"
+          MSG_HEADER_ERR="❌ Screener ERROR ($CODE)"
+
+          if [ -f "$SEED_FILE" ]; then
+            echo "msg_seed<<EOF" >> "$GITHUB_OUTPUT"
+            cat "$SEED_FILE" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          else
+            echo "msg_seed<<EOF" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Nessun seed summary generato." >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
           fi
 
-          # ripulisci e tronca (Telegram <=4096)
-          MSG_BODY="$(printf "%s" "$MSG_BODY" | tr -d '\000')"
-          MAX=3900
-          LEN=$(printf "%s" "$MSG_BODY" | wc -c)
-          if [ "$LEN" -gt "$MAX" ]; then
-            MSG_BODY="$(printf "%s" "$MSG_BODY" | head -c $MAX)"
-            MSG_BODY="${MSG_BODY}"$'\n\n''...(troncato)'
+          if [ -f "$ALL3_FILE" ]; then
+            echo "msg_all3<<EOF" >> "$GITHUB_OUTPUT"
+            cat "$ALL3_FILE" >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
+          else
+            echo "msg_all3<<EOF" >> "$GITHUB_OUTPUT"
+            echo "⚠️ Nessun report TOP generato." >> "$GITHUB_OUTPUT"
+            echo "EOF" >> "$GITHUB_OUTPUT"
           fi
 
-          {
-            echo "msg_header<<EOF"
-            echo "$MSG_HEADER"
-            echo "EOF"
-            echo "msg_body<<EOF"
-            echo "$MSG_BODY"
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          # Log grezzi (stdout/stderr) come fallback/debug
+          printf "%s\n" "$MSG_HEADER_OK" > header.txt
+          if [ $CODE -ne 0 ]; then
+            printf "%s\n" "$MSG_HEADER_ERR" > header.txt
+          fi
 
-      - name: Send Telegram message
+      - name: Send Telegram — Seed summary
         if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
         run: |
           API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
-          TEXT="$(printf "%s\n\n%s" "${{ steps.screener.outputs.msg_header }}" "${{ steps.screener.outputs.msg_body }}")"
+          TEXT="$(printf "%s\n\n%s" "${{ steps.screener.outputs.exit_code == '0' && '✅ Screener OK' || '❌ Screener ERROR (' }}${{ steps.screener.outputs.exit_code }}${{ steps.screener.outputs.exit_code == '0' && '' || ')' }}" "${{ steps.screener.outputs.msg_seed }}")"
+          # Hard truncate to fit Telegram (<=4096)
+          TRUNC="$(printf "%s" "$TEXT" | head -c 3900)"
           curl -sS -X POST "$API" \
             --data-urlencode "chat_id=${TG_CHAT_ID}" \
-            --data-urlencode "text=$TEXT" \
+            --data-urlencode "text=$TRUNC" \
             -d "disable_web_page_preview=true" \
             -d "parse_mode=HTML" \
-          || echo "Telegram send failed"
+          || echo "Telegram send failed (seed)"
+
+      - name: Send Telegram — Daily TOP + diff
+        if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
+        run: |
+          API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
+          TEXT="${{ steps.screener.outputs.msg_all3 }}"
+          TRUNC="$(printf "%s" "$TEXT" | head -c 3900)"
+          curl -sS -X POST "$API" \
+            --data-urlencode "chat_id=${TG_CHAT_ID}" \
+            --data-urlencode "text=$TRUNC" \
+            -d "disable_web_page_preview=true" \
+            -d "parse_mode=HTML" \
+          || echo "Telegram send failed (all3)"
 
       - name: Upload logs (artifact)
         if: always()
@@ -105,3 +128,6 @@ jobs:
           path: |
             out.txt
             err.txt
+            state/telegram/seed.txt
+            state/telegram/all3.txt
+            state/last_all3.json
