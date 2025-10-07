@@ -2,7 +2,7 @@ name: Daily Screener (bash)
 
 on:
   schedule:
-    - cron: "30 * * * *"   # trigger ogni ora al minuto 30; gating limita a 09:30 e 17:30 Europe/Rome
+    - cron: "30 */8 * * *" 
   workflow_dispatch: {}
 
 permissions:
