@@ -1,24 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Crypto Screener (v2.3.2) — Output TOP-only con Pool address
-
-Differenze principali vs v2.3.1:
-- Stampa ESCLUSIVAMENTE la sezione:
-    — Tutti e 3 i parametri (TOP) —
-  con righe nel formato:
-    SYMBOL · Name · LP: 1.234.567$ · Pool: 0xABCDEF...
-  (nessun troncamento dell'indirizzo).
-- Output "quiet" forzato: nessun altro log, tabella o barra di progresso.
-- Nessun "Telegram report" o "funnel": solo la lista TOP.
-
-Criteri invariati:
-  1) CEX spot principale per volume = Bitget (tickers CoinGecko)
-  2) Perpetual su ENTRAMBI: Binance Futures (USDT-M) e Bybit (linear)
+Crypto Screener + V3 Threshold Analyzer (merged)
+------------------------------------------------
+- Parte 1 (Screener): filtra coin che rispettano i 3 criteri
+  1) Perpetual su ENTRAMBI: Binance Futures (USDT-M) e Bybit (linear)
+  2) Top spot CEX = Bitget (euristica sui tickers CoinGecko)
   3) Contratto su BSC e main LP (maggiore liquidità) su PancakeSwap
      (opzione --require-v3 per limitare solo a Pancake v3)
 
-python test4.py --seed-from perps --workers 12 --min-liq 200000 --max-tickers-scan 40 --dominance 0.30 --skip-unchanged-days 0 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100
+- Parte 2 (Analyzer): per OGNI coin che passa il filtro sopra, esegue analisi
+  su pool v3 (pair address) per stimare la QUANTITÀ di token1 necessaria a
+  spingere il prezzo in su fino a +50%, +100%, +200% (fattori 1.5, 2.0, 3.0).
+
+Output finale: una tabella con
+  symbol, name, pair_address, liquidity_usd, market_cap_usd (se disponibile),
+  token1_to_50, token1_to_100, token1_to_200
+
+Note:
+- Per il market cap si prova prima da Dexscreener (marketCap/fdv), altrimenti
+  si tenta CoinGecko/markets.
+- RPC BSC: default "https://bsc-dataseed.binance.org" o variabile BSC_RPC o --rpc.
+- Richiede: requests, web3, (opzionale) pandas, tenacity, rich
+
+MIT License (c) 2025
+
+python yoge.py --require-v3 --min-liq 150000 --rpc https://bsc-dataseed.binance.org --save-csv results.csv
+
 """
 
 from __future__ import annotations
@@ -47,12 +55,11 @@ except Exception:  # pragma: no cover
     def wait_exponential(**kwargs): return None
     def retry_if_exception_type(*args, **kwargs): return None
 
+# rich è opzionale; l'output finale è comunque testo semplice
 try:
     from rich.console import Console
     from rich.table import Table
-    from rich.progress import Progress, BarColumn, TimeElapsedColumn
     from rich.panel import Panel
-    from rich.rule import Rule
     from rich import box
     RICH = True
     console = Console()
@@ -139,6 +146,14 @@ class Settings:
 
     # Seed mode: "perps" (default) o "cg"
     seed_from: str = "perps"
+
+    # Analyzer
+    rpc_url: Optional[str] = None
+    factors_str: str = "1.5,2.0,3.0"  # +50%, +100%, +200%
+    save_csv: Optional[str] = None
+
+# global
+settings: Settings
 
 # --------------------------- Utilities & logging --------------------------- #
 
@@ -263,6 +278,8 @@ def has_perps_on_both(binance_bases: Dict[str, Any], bybit_bases: Dict[str, Any]
 def cg_coin_cache_path(cid: str) -> str:
     return joinp(settings.cache_root, "coingecko", f"{cid}.json")
 
+# fetch "full" (tickers ecc) — market_data=False per screener; market cap lo cerchiamo altrove
+
 def fetch_coin_full(cid: str, cg_rl: RateLimiter) -> Dict[str, Any]:
     cache_path = cg_coin_cache_path(cid)
     j = cache_get(cache_path, settings.ttl_cg_coin_sec)
@@ -282,7 +299,6 @@ def bsc_contract_address(coin: Dict[str, Any]) -> Optional[str]:
     return None
 
 def top_spot_cex_bitget_ok(coin: Dict[str, Any], dominance: float, max_scan: int) -> Tuple[bool, Optional[str]]:
-    """Ritorna (is_bitget_top, top_name) con short-circuit euristico + filtri qualità."""
     tickers = coin.get("tickers", []) or []
     best_name, best_vol = None, -1.0
     seen = 0
@@ -322,6 +338,7 @@ def top_spot_cex_bitget_ok(coin: Dict[str, Any], dominance: float, max_scan: int
     return (best_name or "").lower().startswith("bitget"), best_name
 
 # /coins/list?include_platform=true  --> mappa SYMBOL -> id, preferendo chi ha BSC
+
 def load_cg_coins_list_cached(cg_rl: RateLimiter) -> List[Dict[str, Any]]:
     cache_path = joinp(settings.cache_root, "coingecko", "coins_list_include_platform.json")
     j = cache_get(cache_path, settings.ttl_cg_coin_sec)
@@ -334,13 +351,6 @@ def load_cg_coins_list_cached(cg_rl: RateLimiter) -> List[Dict[str, Any]]:
     return data
 
 def choose_best_cg_id_for_symbol(symbol: str, cg_list: List[Dict[str, Any]]) -> Optional[Tuple[str, str]]:
-    """
-    Ritorna (id, name) per il symbol dato.
-    Heuristica:
-      1) match case-insensitive su symbol; se più entry:
-         - preferisci quelle con 'binance-smart-chain' nei platforms
-         - altrimenti prendi la prima occorrenza
-    """
     sym_up = symbol.upper()
     candidates = []
     for row in cg_list:
@@ -402,7 +412,6 @@ def save_state(state: Dict[str, Any]):
     write_json(state_path(), state)
 
 def stale_by_days(ts: Optional[int], days: int) -> bool:
-    # FIX: se days <= 0 allora NON skippiamo mai (sempre "stale" => rielabora)
     if days <= 0:
         return True
     if not ts:
@@ -443,7 +452,6 @@ def screen_coin(cid: str, sym_hint: str,
                 bybit_bases: Dict[str, Any],
                 cg_rl: RateLimiter, ds_rl: RateLimiter,
                 state: Dict[str, Any]) -> Tuple[FunnelRow, Optional[CheckResult]]:
-    # ---- Pre-skip da indice locale ----
     with state_lock:
         st = dict(state.get(cid, {}))
     last_checked = st.get("last_checked")
@@ -457,20 +465,16 @@ def screen_coin(cid: str, sym_hint: str,
                    skipped=False, reason=None,
                    s1_perps=False, s2_bitget=False, s3_bsc_pancake=False)
 
-    # ---- Stage 1: Perps su entrambi ----
     if not has_perps_on_both(binance_bases, bybit_bases, fr.symbol):
         with state_lock:
             state[cid] = {**st, "last_checked": now_ts(), "status": "no_perps"}
         return fr, None
     fr.s1_perps = True
 
-    # ---- CoinGecko ----
     try:
         coin = fetch_coin_full(cid, cg_rl)
         fr.name = coin.get("name") or cid
     except Exception as e:
-        if settings.verbose and not settings.quiet:
-            log_info(f"[WARN] CoinGecko error for {cid}: {e}")
         with state_lock:
             state[cid] = {**st, "last_checked": now_ts(), "status": "cg_error"}
         return fr, None
@@ -479,7 +483,6 @@ def screen_coin(cid: str, sym_hint: str,
     reasons_ko: List[str] = []
     extra: Dict[str, Any] = {}
 
-    # ---- Stage 2: Top spot CEX = Bitget ----
     bitget_ok, top_name = top_spot_cex_bitget_ok(coin, settings.bitget_dominance, settings.max_tickers_scan)
     extra["top_spot_cex"] = top_name
     fr.top_spot_cex = top_name
@@ -490,7 +493,6 @@ def screen_coin(cid: str, sym_hint: str,
     fr.s2_bitget = True
     reasons_ok.append("Top spot CEX = Bitget")
 
-    # ---- Stage 3: BSC + main LP Pancake ----
     bsc_addr = bsc_contract_address(coin)
     extra["bsc_address"] = bsc_addr
     if not bsc_addr:
@@ -501,8 +503,6 @@ def screen_coin(cid: str, sym_hint: str,
         pair = main_bsc_pair_on_pancake(bsc_addr, ds_rl)
     except Exception as e:
         pair = None
-        if settings.verbose and not settings.quiet:
-            log_info(f"[WARN] Dexscreener error for {cid}: {e}")
     if not pair:
         with state_lock:
             state[cid] = {**st, "last_checked": now_ts(), "status": "no_pancake_or_low_liq"}
@@ -516,10 +516,13 @@ def screen_coin(cid: str, sym_hint: str,
 
     lp_liq = float(((pair.get("liquidity") or {}).get("usd") or 0))
     pool_addr = (pair.get("pairAddress") or "").lower()
+    market_cap_ds = pair.get("marketCap") or pair.get("fdv")  # fallback FDV
+
     fr.s3_bsc_pancake = True
     fr.lp_pair = {
         "dexId": dexid, "pairAddress": pool_addr,
         "liquidityUsd": lp_liq, "priceUsd": pair.get("priceUsd"),
+        "marketCap": market_cap_ds,
     }
     extra["lp_pair"] = fr.lp_pair
     reasons_ok.append("LP principale Pancake" + (" V3" if "v3" in dexid.lower() else ""))
@@ -552,7 +555,6 @@ def list_market_id_symbols(pages: int, per_page: int, cg_rl: RateLimiter) -> Lis
 def build_seed_from_perps(cg_rl: RateLimiter,
                           binance_bases: Dict[str, Any],
                           bybit_bases: Dict[str, Any]) -> List[Tuple[str, str]]:
-    """Intersezione Binance∩Bybit (base symbol) -> mappatura a CG id via /coins/list?include_platform=true"""
     inter_syms = sorted(set(binance_bases.keys()) & set(bybit_bases.keys()))
     if RICH and not settings.quiet:
         console.print(Panel.fit(f"[bold]Seed from PERPS[/bold]\nBinance bases: {len(binance_bases)} | Bybit bases: {len(bybit_bases)}\nIntersezione: [bold]{len(inter_syms)}[/bold]",
@@ -579,44 +581,325 @@ def build_seed_from_perps(cg_rl: RateLimiter,
         t.add_column("Non mappati", justify="right")
         t.add_row(str(len(inter_syms)), str(len(mapped)), str(len(unmapped)))
         console.print(t)
-        if unmapped[:20]:
-            console.print(Panel.fit(", ".join(unmapped[:20]) + (f" ... (+{len(unmapped)-20})" if len(unmapped) > 20 else ""),
-                                    title="Esempi non mappati", border_style="yellow"))
     else:
         log_info(f"Intersezione: {len(inter_syms)} | Mappati: {len(mapped)} | Non mappati: {len(unmapped)}")
 
     return mapped  # [(cg_id, symbol)]
 
-# --------------------------- Rendering TOP-only --------------------------- #
+# --------------------------- CG markets (market cap fallback) --------------------------- #
+
+def cg_markets_cache_path(cid: str) -> str:
+    return joinp(settings.cache_root, "coingecko", f"markets_{cid}.json")
+
+def fetch_cg_markets_row(cid: str, cg_rl: RateLimiter) -> Optional[dict]:
+    path = cg_markets_cache_path(cid)
+    j = cache_get(path, settings.ttl_cg_coin_sec)
+    if j is not None:
+        return j
+    # ricerca per singolo id — per semplicità scarichiamo la prima pagina generale e filtriamo
+    url = f"{COINGECKO}/coins/markets?vs_currency=usd&ids={cid}&order=market_cap_desc&per_page=1&page=1&sparkline=false&locale=en"
+    cg_rl.wait()
+    try:
+        data = Http.get(url).json()
+        row = (data or [None])[0]
+    except Exception:
+        row = None
+    if row:
+        write_json(path, row)
+    return row
+
+# --------------------------- Formatter --------------------------- #
 
 def format_eur_style_usd(amount: Any) -> str:
-    """Formatta 1234567.89 -> '1.234.567$' (senza decimali, stile Eu con punto come separatore migliaia)."""
     try:
         iv = int(float(amount))
         return f"{iv:,}$".replace(",", ".")
     except Exception:
-        return f"{amount}$"
+        return str(amount)
 
-def build_top_only_output(results: List[CheckResult]) -> str:
-    """Crea SOLO la sezione:
-       — Tutti e 3 i parametri (TOP) —
-       SYMBOL · Name · LP: 1.234.567$ · Pool: 0x....
-    """
-    all3 = [r for r in results if r.score() >= 2 and r.ok()]  # 2 OK: Bitget + Pancake (BSC)
-    lines: List[str] = ["— Tutti e 3 i parametri (TOP) —", ""]
-    for r in all3:
-        lp = r.extra.get("lp_pair", {}) if r.extra else {}
-        liq = format_eur_style_usd(lp.get("liquidityUsd"))
-        pool_addr = lp.get("pairAddress") or ""
-        name = r.name or r.id
-        # Nessun troncamento del pool address
-        lines.append(f"{r.symbol} · {name} · LP: {liq} · Pool: {pool_addr}")
-    return "\n".join(lines)
+# --------------------------- Analyzer (V3 math) --------------------------- #
+
+from decimal import Decimal, getcontext
+import math
+try:
+    from web3 import Web3
+    try:
+        from web3.middleware import ExtraDataToPOAMiddleware  # web3.py v6
+    except ImportError:
+        ExtraDataToPOAMiddleware = None
+    try:
+        from web3.middleware import geth_poa_middleware        # web3.py v5
+    except ImportError:
+        geth_poa_middleware = None
+except Exception:
+    Web3 = None  # type: ignore
+    ExtraDataToPOAMiddleware = None
+    geth_poa_middleware = None
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from web3 import Web3 as Web3Type
+else:
+    # segnaposto runtime (Pylance ignora questo ramo)
+    class Web3Type:  # type: ignore
+        pass
+
+getcontext().prec = 80
+Q96 = 2 ** 96
+
+UNISWAP_V3_POOL_MINI_ABI = [
+    {
+        "inputs": [],
+        "name": "slot0",
+        "outputs": [
+            {"internalType": "uint160", "name": "sqrtPriceX96", "type": "uint160"},
+            {"internalType": "int24",   "name": "tick", "type": "int24"},
+            {"internalType": "uint16",  "name": "observationIndex", "type": "uint16"},
+            {"internalType": "uint16",  "name": "observationCardinality", "type": "uint16"},
+            {"internalType": "uint16",  "name": "observationCardinalityNext", "type": "uint16"},
+            {"internalType": "uint32",  "name": "feeProtocol", "type": "uint32"},
+            {"internalType": "bool",    "name": "unlocked", "type": "bool"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "tickSpacing",
+        "outputs": [{"internalType": "int24", "name": "", "type": "int24"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"internalType": "int16", "name": "wordPosition", "type": "int16"}],
+        "name": "tickBitmap",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [{"internalType": "int24", "name": "tick", "type": "int24"}],
+        "name": "ticks",
+        "outputs": [
+            {"internalType": "uint128", "name": "liquidityGross", "type": "uint128"},
+            {"internalType": "int128", "name": "liquidityNet", "type": "int128"},
+            {"internalType": "uint256", "name": "feeGrowthOutside0X128", "type": "uint256"},
+            {"internalType": "uint256", "name": "feeGrowthOutside1X128", "type": "uint256"},
+            {"internalType": "int56", "name": "tickCumulativeOutside", "type": "int56"},
+            {"internalType": "uint160", "name": "secondsPerLiquidityOutsideX128", "type": "uint160"},
+            {"internalType": "uint32", "name": "secondsOutside", "type": "uint32"},
+            {"internalType": "bool", "name": "initialized", "type": "bool"},
+        ],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {
+        "inputs": [],
+        "name": "liquidity",
+        "outputs": [{"internalType": "uint128", "name": "", "type": "uint128"}],
+        "stateMutability": "view",
+        "type": "function",
+    },
+    {"inputs": [], "name": "token0", "outputs": [{"internalType": "address", "name": "", "type": "address"}], "stateMutability": "view", "type": "function"},
+    {"inputs": [], "name": "token1", "outputs": [{"internalType": "address", "name": "", "type": "address"}], "stateMutability": "view", "type": "function"},
+]
+
+ERC20_MINI_ABI = [
+    {"constant": True, "inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "payable": False, "stateMutability": "view", "type": "function"},
+    {"constant": True, "inputs": [], "name": "symbol",   "outputs": [{"name": "", "type": "string"}], "payable": False, "stateMutability": "view", "type": "function"},
+]
+
+ERC20_MINI_ABI_BYTES32 = [
+    {"constant": True, "inputs": [], "name": "symbol", "outputs": [{"name": "", "type": "bytes32"}], "payable": False, "stateMutability": "view", "type": "function"},
+    {"constant": True, "inputs": [], "name": "decimals", "outputs": [{"name": "", "type": "uint8"}], "payable": False, "stateMutability": "view", "type": "function"},
+]
+
+@dataclass
+class TokenMeta:
+    address: str
+    decimals: int
+    symbol: str
+
+@dataclass
+class PoolSnapshot:
+    sqrtPriceX96: int
+    tick: int
+    tickSpacing: int
+    liquidity: int
+    token0: TokenMeta
+    token1: TokenMeta
+    block_number: int
+    block_timestamp: int
+
+def _inject_poa(w3: Web3Type) -> None:
+    # web3.py v6+
+    if ExtraDataToPOAMiddleware is not None:
+        w3.middleware_onion.inject(ExtraDataToPOAMiddleware, layer=0)
+        return
+    # web3.py v5.x
+    if geth_poa_middleware is not None:
+        w3.middleware_onion.inject(geth_poa_middleware, layer=0)
+        return
+
+def floor_div_neg(a: int, b: int) -> int:
+    return a // b
+
+def price_from_sqrtX96(sqrtX96: int, dec0: int, dec1: int) -> Decimal:
+    sp = Decimal(sqrtX96) / Decimal(Q96)
+    price = sp * sp * (Decimal(10) ** Decimal(dec1 - dec0))
+    return price
+
+def tick_from_price(price: Decimal, dec0: int, dec1: int) -> int:
+    base = Decimal('1.0001')
+    val = price * (Decimal(10) ** Decimal(dec0 - dec1))
+    t = (val.ln() / base.ln())
+    return math.floor(t)
+
+def sqrt_unscaled_from_tick_delta(sqrt_curr_unscaled: Decimal, delta_tick: int) -> Decimal:
+    base = Decimal('1.0001')
+    exponent = Decimal(delta_tick) / Decimal(2)
+    return sqrt_curr_unscaled * (base ** exponent)
+
+def sqrtX96_from_unscaled(sqrt_unscaled: Decimal) -> int:
+    return int((sqrt_unscaled * Decimal(Q96)).to_integral_value(rounding="ROUND_FLOOR"))
+
+def scan_initialized_ticks(w3: Web3Type, pool, t0: int, t_target: int, spacing: int) -> List[int]:
+
+    c0 = floor_div_neg(t0, spacing)
+    cT = floor_div_neg(t_target, spacing)
+    w0 = floor_div_neg(c0, 256)
+    wT = floor_div_neg(cT, 256)
+    in_range: List[int] = []
+    direction = 1 if t_target >= t0 else -1
+
+    if direction >= 0:
+        word_range = range(w0, wT + 1)
+    else:
+        word_range = range(w0, wT - 1, -1)
+
+    for w in word_range:
+        bitmap = pool.functions.tickBitmap(w).call()
+        if bitmap == 0:
+            continue
+        for b in range(256):
+            if (bitmap >> b) & 1 == 1:
+                c_i = w * 256 + b
+                tick_i = c_i * spacing
+                if direction >= 0:
+                    if tick_i > t0 and tick_i <= t_target:
+                        in_range.append(tick_i)
+                else:
+                    if tick_i <= t0 and tick_i > t_target:
+                        in_range.append(tick_i)
+
+    in_range = sorted(in_range) if direction >= 0 else sorted(in_range, reverse=True)
+    return in_range
+
+def fetch_liquidity_nets(w3: Web3Type, pool, tick_indices: List[int]) -> Dict[int, int]:
+
+    liq_nets: Dict[int, int] = {}
+    for ti in tick_indices:
+        data = pool.functions.ticks(ti).call()
+        liquidityNet = int(data[1])
+        liq_nets[ti] = liquidityNet
+    return liq_nets
+
+def read_pool_snapshot(w3: Web3Type, pool_addr: str) -> PoolSnapshot:
+
+    pool = w3.eth.contract(address=Web3.to_checksum_address(pool_addr), abi=UNISWAP_V3_POOL_MINI_ABI)
+    sqrtPriceX96, tick, *_rest = pool.functions.slot0().call()
+    tickSpacing = int(pool.functions.tickSpacing().call())
+    liquidity = int(pool.functions.liquidity().call())
+    token0_addr = pool.functions.token0().call()
+    token1_addr = pool.functions.token1().call()
+
+    c_str0 = w3.eth.contract(address=token0_addr, abi=ERC20_MINI_ABI)
+    c_b320 = w3.eth.contract(address=token0_addr, abi=ERC20_MINI_ABI_BYTES32)
+    c_str1 = w3.eth.contract(address=token1_addr, abi=ERC20_MINI_ABI)
+    c_b321 = w3.eth.contract(address=token1_addr, abi=ERC20_MINI_ABI_BYTES32)
+
+    def _read_meta(c_str, c_b32, addr) -> TokenMeta:
+        decimals = int(c_str.functions.decimals().call())
+        try:
+            symbol = c_str.functions.symbol().call()
+            if isinstance(symbol, (bytes, bytearray)):
+                symbol = symbol.decode('utf-8', 'ignore').strip('\x00')
+        except Exception:
+            raw = c_b32.functions.symbol().call()
+            symbol = raw.decode('utf-8', 'ignore').strip('\x00') if isinstance(raw, (bytes, bytearray)) else str(raw)
+        return TokenMeta(address=addr, decimals=decimals, symbol=symbol or "TOKEN")
+
+    tok0_meta = _read_meta(c_str0, c_b320, token0_addr)
+    tok1_meta = _read_meta(c_str1, c_b321, token1_addr)
+
+    latest_block = w3.eth.get_block("latest")
+
+    snapshot = PoolSnapshot(
+        sqrtPriceX96=int(sqrtPriceX96),
+        tick=int(tick),
+        tickSpacing=int(tickSpacing),
+        liquidity=int(liquidity),
+        token0=tok0_meta,
+        token1=tok1_meta,
+        block_number=int(latest_block.number),
+        block_timestamp=int(latest_block.timestamp),
+    )
+    return snapshot
+
+def integrate_token1_to_target(snapshot: PoolSnapshot, w3: Web3Type, pool, tick_target: int) -> Decimal:
+
+    t0 = snapshot.tick
+    if tick_target < t0:
+        raise ValueError("Only upward moves supported in this integration.")
+
+    spacing = snapshot.tickSpacing
+    ticks_in_range = scan_initialized_ticks(w3, pool, t0, tick_target, spacing)
+    liq_nets = fetch_liquidity_nets(w3, pool, ticks_in_range)
+
+    sqrt_curr_unscaled = Decimal(snapshot.sqrtPriceX96) / Decimal(Q96)
+
+    boundary_ticks = ticks_in_range.copy()
+    L = int(snapshot.liquidity)
+    token1_raw_total = 0
+
+    all_stops: List[Tuple[str, int]] = [("tick", ti) for ti in boundary_ticks] + [("target", tick_target)]
+
+    prev_sqrtX96 = snapshot.sqrtPriceX96
+    for kind, stop_tick in all_stops:
+        delta_tick = stop_tick - t0
+        sqrt_stop_unscaled = sqrt_unscaled_from_tick_delta(sqrt_curr_unscaled, delta_tick)
+        sqrt_stop_X96 = sqrtX96_from_unscaled(sqrt_stop_unscaled)
+        delta_sqrtX96 = sqrt_stop_X96 - prev_sqrtX96
+        if delta_sqrtX96 < 0:
+            raise RuntimeError("Negative delta sqrt while moving upward.")
+        seg_amount1_raw = (int(L) * int(delta_sqrtX96)) // Q96
+        token1_raw_total += seg_amount1_raw
+        if kind == "tick":
+            L = L + int(liq_nets[stop_tick])
+        prev_sqrtX96 = sqrt_stop_X96
+
+    token1_human = Decimal(token1_raw_total) / (Decimal(10) ** Decimal(snapshot.token1.decimals))
+    return token1_human
+
+def compute_thresholds(snapshot: PoolSnapshot, w3: Web3Type, pool, factors: List[Decimal]) -> Dict[str, Tuple[Decimal, str]]:
+
+    """Ritorna mappa {label: (amount_token1, token1_symbol)}"""
+    res: Dict[str, Tuple[Decimal, str]] = {}
+    # prezzo corrente (token1 per 1 token0)
+    p0 = price_from_sqrtX96(snapshot.sqrtPriceX96, snapshot.token0.decimals, snapshot.token1.decimals)
+    for f in factors:
+        p_target = p0 * f
+        t_target = tick_from_price(p_target, snapshot.token0.decimals, snapshot.token1.decimals)
+        amt = integrate_token1_to_target(snapshot, w3, pool, t_target)
+        label = f"+{int((f-1)*100)}%"
+        res[label] = (amt, snapshot.token1.symbol)
+    return res
 
 # --------------------------- CLI --------------------------- #
 
 def parse_args() -> Settings:
-    ap = argparse.ArgumentParser(description="Crypto screener per CEX/DEX (3 criteri + funnel, cache-aware & robust, perps-first)")
+    ap = argparse.ArgumentParser(description="Crypto screener + thresholds su pool v3 (BSC/Pancake)")
     ap.add_argument("--pages", type=int, default=1)
     ap.add_argument("--per-page", type=int, default=250)
     ap.add_argument("--ids", type=str, default=None, help="Lista di ids CoinGecko separati da virgola (bypassa seed)")
@@ -624,13 +907,6 @@ def parse_args() -> Settings:
 
     ap.add_argument("--min-liq", type=float, default=150000.0)
     ap.add_argument("--require-v3", action="store_true", help="Accetta solo LP Pancake v3")
-
-    # compat flags non usati (mantenuti)
-    ap.add_argument("--price-mult", type=float, default=3.0, help=argparse.SUPPRESS)
-    ap.add_argument("--max-ticks-above", type=int, default=0, help=argparse.SUPPRESS)
-    ap.add_argument("--ttl-sg", type=int, default=24*3600, help=argparse.SUPPRESS)
-    ap.add_argument("--rps-sg", type=float, default=1.0, help=argparse.SUPPRESS)
-    ap.add_argument("--dex-liq-delta", type=float, default=0.4, help=argparse.SUPPRESS)
 
     ap.add_argument("--dominance", type=float, default=0.60, help="Dominanza Bitget per short-circuit (0-1)")
     ap.add_argument("--max-tickers-scan", type=int, default=15)
@@ -647,13 +923,19 @@ def parse_args() -> Settings:
     ap.add_argument("--rps-cg", type=float, default=1.0)
     ap.add_argument("--rps-ds", type=float, default=2.0)
 
-    ap.add_argument("--funnel-show", type=int, default=30, help="Max righe da mostrare per stage")
+    ap.add_argument("--funnel-show", type=int, default=30)
     ap.add_argument("--seed-from", type=str, choices=["perps","cg"], default="perps",
                     help="Origine seed: 'perps' (intersezione Binance∩Bybit) o 'cg' (coins/markets)")
+
+    # Analyzer
+    ap.add_argument("--rpc", type=str, default=None, help="BSC RPC URL (default env BSC_RPC o public)")
+    ap.add_argument("--factors", type=str, default="1.5,2.0,3.0", help="Lista fattori es: 1.5,2.0,3.0 => +50,+100,+200")
+    ap.add_argument("--save-csv", type=str, default=None, help="Se specificato, salva CSV con i risultati finali")
 
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--no-verbose", dest="verbose", action="store_false")
     ap.set_defaults(verbose=True)
+
     args = ap.parse_args()
 
     s = Settings(
@@ -678,6 +960,10 @@ def parse_args() -> Settings:
         funnel_show=max(1, args.funnel_show),
 
         seed_from=args.seed_from,
+
+        rpc_url=args.rpc or os.environ.get("BSC_RPC") or "https://bsc-dataseed.binance.org",
+        factors_str=args.factors,
+        save_csv=args.save_csv,
     )
     return s
 
@@ -687,7 +973,7 @@ def main():
     global settings
     settings = parse_args()
 
-    # Forza modalità "TOP-only": nessun altro output
+    # Forza modalità silenziosa per lo screener; stamperemo solo il report finale
     settings.quiet = True
     settings.verbose = False
 
@@ -698,7 +984,6 @@ def main():
     ds_rl = RateLimiter(settings.rps_ds)
 
     # Perps (cache 7g)
-    # (log soppressi in quiet mode)
     binance_bases = load_binance_perp_bases_cached()
     bybit_bases   = load_bybit_perp_bases_cached()
 
@@ -710,50 +995,122 @@ def main():
             id_syms = build_seed_from_perps(cg_rl, binance_bases, bybit_bases)  # [(cg_id, symbol)]
         else:
             id_syms = list_market_id_symbols(settings.pages, settings.per_page, cg_rl)
-            # Pre-filtra per simbolo: solo quelli con perps su entrambi
             inter = set(binance_bases.keys()) & set(bybit_bases.keys())
             id_syms = [row for row in id_syms if (row[1] or "").upper() in inter]
 
     # Stato persistente
     state = load_state()
 
-    # Concorrenza controllata (no progress bar in quiet mode)
+    # Screener concorrente
     results: List[CheckResult] = []
-    funnel_rows: List[FunnelRow] = []
+    with ThreadPoolExecutor(max_workers=settings.workers) as ex:
+        futures = {
+            ex.submit(screen_coin, cid, sym, binance_bases, bybit_bases, cg_rl, ds_rl, state): cid
+            for (cid, sym) in id_syms
+        }
+        for fut in as_completed(futures):
+            _fr, res = fut.result()
+            if res: results.append(res)
 
-    if RICH and not settings.quiet:
-        prog = Progress("[progress.description]{task.description}",
-                        BarColumn(), "[progress.percentage]{task.percentage:>3.0f}%",
-                        TimeElapsedColumn())
-        with prog:
-            task_id = prog.add_task("Analisi coin", total=len(id_syms))
-            with ThreadPoolExecutor(max_workers=settings.workers) as ex:
-                futures = {
-                    ex.submit(screen_coin, cid, sym, binance_bases, bybit_bases, cg_rl, ds_rl, state): cid
-                    for (cid, sym) in id_syms
-                }
-                for fut in as_completed(futures):
-                    fr, res = fut.result()
-                    funnel_rows.append(fr)
-                    if res: results.append(res)
-                    prog.advance(task_id)
-    else:
-        with ThreadPoolExecutor(max_workers=settings.workers) as ex:
-            futures = {
-                ex.submit(screen_coin, cid, sym, binance_bases, bybit_bases, cg_rl, ds_rl, state): cid
-                for (cid, sym) in id_syms
-            }
-            for fut in as_completed(futures):
-                fr, res = fut.result()
-                funnel_rows.append(fr)
-                if res: results.append(res)
-
-    # Salva stato
+    # Salva stato screener
     save_state(state)
 
-    # --- OUTPUT UNICO RICHIESTO (TOP-only) ---
-    out = build_top_only_output(results)
-    print(out)
+    # Filtra solo chi ha passato tutti e 3 i criteri
+    passed = [r for r in results if r.score() >= 2 and r.ok() and r.extra.get("lp_pair")]
+
+    # Se non ci sono pool, termina con messaggio minimale
+    if not passed:
+        print("Nessuna coin ha soddisfatto i 3 criteri.")
+        return
+
+    # Prepara web3 per l'analisi
+    if Web3 is None:
+        print("web3.py non disponibile: impossibile eseguire l'analisi dei thresholds. Installa 'web3'.")
+        return
+
+    w3 = Web3(Web3.HTTPProvider(settings.rpc_url, request_kwargs={"timeout": 30}))
+    _inject_poa(w3)
+    if not w3.is_connected():
+        raise RuntimeError("Connessione RPC fallita. Fornisci una BSC RPC valida con --rpc o variabile BSC_RPC.")
+
+    # Parsing fattori
+    try:
+        factors = [Decimal(x.strip()) for x in settings.factors_str.split(',') if x.strip()]
+    except Exception:
+        factors = [Decimal('1.5'), Decimal('2.0'), Decimal('3.0')]
+
+    # Analizza ogni pool
+    rows_out: List[Dict[str, Any]] = []
+
+    for r in passed:
+        lp = r.extra.get("lp_pair", {})
+        pool_addr = lp.get("pairAddress")
+        liq_usd = lp.get("liquidityUsd")
+        mcap_usd = lp.get("marketCap")  # potrebbe essere None
+
+        # fallback market cap da CG markets
+        if mcap_usd in (None, 0):
+            mr = fetch_cg_markets_row(r.id, cg_rl)
+            if mr:
+                mcap_usd = mr.get("market_cap")
+
+        # Esegui lettura on-chain e stima soglie
+        try:
+            snapshot = read_pool_snapshot(w3, pool_addr)
+            pool = w3.eth.contract(address=Web3.to_checksum_address(pool_addr), abi=UNISWAP_V3_POOL_MINI_ABI)
+            thr = compute_thresholds(snapshot, w3, pool, factors)
+        except Exception as e:
+            thr = {}
+
+        # Estrarre +50, +100, +200 (se i fattori sono standard). Altrimenti prendere quelli disponibili.
+        def fmt_thr(label: str) -> str:
+            if label in thr:
+                amt, sym1 = thr[label]
+                # stampa compatta con 6 decimali max
+                q = amt.quantize(Decimal('0.000001')) if amt < Decimal('1000000') else amt.quantize(Decimal('1'))
+                return f"{q} {sym1}"
+            return "-"
+
+        out_row = {
+            "symbol": r.symbol,
+            "name": r.name,
+            "pair_address": pool_addr,
+            "liquidity_usd": liq_usd,
+            "market_cap_usd": mcap_usd,
+            "to_50": fmt_thr("+50%"),
+            "to_100": fmt_thr("+100%"),
+            "to_200": fmt_thr("+200%"),
+        }
+        rows_out.append(out_row)
+
+    # Stampa tabella testuale ordinata per liquidità decrescente
+    rows_out.sort(key=lambda x: (x["liquidity_usd"] or 0), reverse=True)
+
+    # Prova con pandas per una stampa pulita, ma degrada se non disponibile
+    header = ["symbol","name","pair_address","liquidity_usd","market_cap_usd","to_50","to_100","to_200"]
+    try:
+        import pandas as pd
+        df = pd.DataFrame(rows_out, columns=header)
+        # formattazioni
+        def _fmt_usd(v):
+            return format_eur_style_usd(v) if pd.notnull(v) else "-"
+        df["liquidity_usd"] = df["liquidity_usd"].apply(_fmt_usd)
+        df["market_cap_usd"] = df["market_cap_usd"].apply(_fmt_usd)
+        print("\n=== Risultati finali (TOP con thresholds) ===")
+        print(df.to_string(index=False))
+        if settings.save_csv:
+            out_path = settings.save_csv
+            df_raw = pd.DataFrame(rows_out, columns=header)  # salva i raw per CSV
+            ensure_dir(os.path.dirname(out_path) or ".")
+            df_raw.to_csv(out_path, index=False)
+            print(f"\nSalvato CSV: {out_path}")
+    except Exception:
+        # fallback semplice CSV
+        print(",".join(header))
+        for row in rows_out:
+            print(
+                f"{row['symbol']},{row['name']},{row['pair_address']},{row['liquidity_usd'] or ''},{row['market_cap_usd'] or ''},{row['to_50']},{row['to_100']},{row['to_200']}"
+            )
 
 if __name__ == "__main__":
     main()
