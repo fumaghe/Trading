@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Crypto Screener (v2.3.1) — 3 criteri + funnel, cache-aware & robust, PERPS-FIRST
+Crypto Screener (v2.4.0) — 3 criteri + funnel, cache-aware & robust, PERPS-FIRST
 
 Criteri attivi:
   1) CEX spot principale per volume = Bitget (tickers CoinGecko)
@@ -9,16 +9,14 @@ Criteri attivi:
   3) Ha contratto su BSC e il main LP (maggiore liquidità) è su PancakeSwap
      (opzione --require-v3 per limitare solo a Pancake v3)
 
-Novità v2.3:
-- Seed “perps-first”: candidati = intersezione dei base asset di Binance&Bybit.
-- Mappatura symbol→CoinGecko id con /coins/list?include_platform=true (cache).
-- Log migliorati (Rich) con riepiloghi, tabelle e progressi.
-- Filtri qualità tickers CG (stale/anomaly e trust≠green/yellow).
-- Stato persistente thread-safe (lock) per evitare write races.
-
-v2.3.1:
-- FIX: con --skip-unchanged-days 0 non si skippa nulla (ricontrolla sempre).
-- Aggiunto report testuale “Telegram-friendly” a fine esecuzione (niente tabelle).
+Novità v2.4.0:
+- Output Telegram separato e testuale (niente Rich): due messaggi:
+  (1) Seed summary (intersezione & mapping)
+  (2) Daily TOP (tutti e 3 i parametri) + diff con run precedente (NUOVE/RIMOSSE).
+- Persistenza storico "all3" in state/last_all3.json con ts, id, symbol, name, LP/liquidity.
+- File pronti per GH Actions: state/telegram/seed.txt e state/telegram/all3.txt
+- Gating orari demandato al workflow (vedi daily.yml).
+- Bugfix & piccoli miglioramenti ai log.
 """
 
 from __future__ import annotations
@@ -140,7 +138,7 @@ class Settings:
     # Seed mode: "perps" (default) o "cg"
     seed_from: str = "perps"
 
-# --------------------------- Utilities & logging --------------------------- #
+# --------------------------- Utils --------------------------- #
 
 def now_ts() -> int:
     return int(time.time())
@@ -150,14 +148,6 @@ def ensure_dir(p: str):
 
 def joinp(*a) -> str:
     return os.path.join(*a)
-
-def log_info(msg: str):
-    if settings.quiet:
-        return
-    if RICH:
-        console.log(msg)
-    else:
-        print(msg)
 
 def read_json(path: str) -> Optional[dict]:
     p = Path(path)
@@ -171,7 +161,12 @@ def read_json(path: str) -> Optional[dict]:
 def write_json(path: str, data: dict):
     ensure_dir(os.path.dirname(path))
     with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f)
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def write_text(path: str, text: str):
+    ensure_dir(os.path.dirname(path))
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(text)
 
 def cache_get(path: str, ttl_sec: int) -> Optional[dict]:
     p = Path(path)
@@ -183,6 +178,14 @@ def cache_get(path: str, ttl_sec: int) -> Optional[dict]:
             return json.load(f)
     except Exception:
         return None
+
+def log_info(msg: str):
+    if settings.quiet:
+        return
+    if RICH:
+        console.log(msg)
+    else:
+        print(msg)
 
 # --------------------------- HTTP --------------------------- #
 
@@ -321,7 +324,6 @@ def top_spot_cex_bitget_ok(coin: Dict[str, Any], dominance: float, max_scan: int
             break
     return (best_name or "").lower().startswith("bitget"), best_name
 
-# /coins/list?include_platform=true  --> mappa SYMBOL -> id, preferendo chi ha BSC
 def load_cg_coins_list_cached(cg_rl: RateLimiter) -> List[Dict[str, Any]]:
     cache_path = joinp(settings.cache_root, "coingecko", "coins_list_include_platform.json")
     j = cache_get(cache_path, settings.ttl_cg_coin_sec)
@@ -402,7 +404,7 @@ def save_state(state: Dict[str, Any]):
     write_json(state_path(), state)
 
 def stale_by_days(ts: Optional[int], days: int) -> bool:
-    # FIX: se days <= 0 allora NON skippiamo mai (sempre "stale" => rielabora)
+    # se days <= 0 allora NON skippiamo mai (sempre "stale" => rielabora)
     if days <= 0:
         return True
     if not ts:
@@ -435,6 +437,16 @@ class FunnelRow:
     top_spot_cex: Optional[str] = None
     lp_pair: Optional[Dict[str, Any]] = None
 
+@dataclass
+class SeedStats:
+    binance_count: int
+    bybit_count: int
+    intersection_count: int
+    mapped_count: int
+    unmapped_count: int
+    unmapped_examples: List[str]  # up to N examples
+    seed_origin: str              # "perps" or "cg"
+
 # lock globale per lo stato (thread-safe)
 state_lock = threading.Lock()
 
@@ -457,7 +469,7 @@ def screen_coin(cid: str, sym_hint: str,
                    skipped=False, reason=None,
                    s1_perps=False, s2_bitget=False, s3_bsc_pancake=False)
 
-    # ---- Stage 1: Perps su entrambi (by construction per seed=perps, ma ricontrollo) ----
+    # ---- Stage 1: Perps su entrambi ----
     if not has_perps_on_both(binance_bases, bybit_bases, fr.symbol):
         with state_lock:
             state[cid] = {**st, "last_checked": now_ts(), "status": "no_perps"}
@@ -547,11 +559,9 @@ def list_market_id_symbols(pages: int, per_page: int, cg_rl: RateLimiter) -> Lis
             if cid: rows.append((cid, sym))
     return rows
 
-
-
 def build_seed_from_perps(cg_rl: RateLimiter,
                           binance_bases: Dict[str, Any],
-                          bybit_bases: Dict[str, Any]) -> List[Tuple[str, str]]:
+                          bybit_bases: Dict[str, Any]) -> Tuple[List[Tuple[str, str]], SeedStats]:
     """Intersezione Binance∩Bybit (base symbol) -> mappatura a CG id via /coins/list?include_platform=true"""
     inter_syms = sorted(set(binance_bases.keys()) & set(bybit_bases.keys()))
     if RICH:
@@ -585,7 +595,16 @@ def build_seed_from_perps(cg_rl: RateLimiter,
     else:
         log_info(f"Intersezione: {len(inter_syms)} | Mappati: {len(mapped)} | Non mappati: {len(unmapped)}")
 
-    return mapped  # [(cg_id, symbol)]
+    stats = SeedStats(
+        binance_count=len(binance_bases),
+        bybit_count=len(bybit_bases),
+        intersection_count=len(inter_syms),
+        mapped_count=len(mapped),
+        unmapped_count=len(unmapped),
+        unmapped_examples=unmapped[:20],
+        seed_origin="perps",
+    )
+    return mapped, stats  # [(cg_id, symbol)], stats
 
 # --------------------------- Rendering (terminal) --------------------------- #
 
@@ -677,64 +696,99 @@ def print_results(results: List[CheckResult], funnel_rows: List[FunnelRow], tota
         for r in at_least2:
             print(f"{r.symbol:6} | {r.name:24} | Top CEX: {r.top_spot_cex}")
 
-# --------------------------- Telegram-friendly text --------------------------- #
+# --------------------------- Telegram builders --------------------------- #
 
-def build_telegram_report(results: List[CheckResult], funnel_rows: List[FunnelRow], total_candidates: int) -> str:
-    total_skipped = sum(1 for r in funnel_rows if r.skipped)
+def build_telegram_seed_message(stats: SeedStats) -> str:
+    # Messaggio conciso, <b> e monospace per numeri
+    lines = []
+    lines.append(f"📊 <b>SEED SUMMARY</b> ({'PERPS' if stats.seed_origin=='perps' else 'CG'})")
+    lines.append("")
+    lines.append(f"• Binance perps: <code>{stats.binance_count}</code>")
+    lines.append(f"• Bybit perps: <code>{stats.bybit_count}</code>")
+    lines.append(f"• Intersezione: <code>{stats.intersection_count}</code>")
+    lines.append(f"• Mappati CoinGecko: <code>{stats.mapped_count}</code> (non mappati: <code>{stats.unmapped_count}</code>)")
+    if stats.unmapped_examples:
+        ex = ", ".join(stats.unmapped_examples)
+        lines.append("")
+        lines.append("<b>Esempi non mappati</b>")
+        lines.append(ex)
+    return "\n".join(lines)
+
+def reason_human(status: Optional[str]) -> str:
+    mapping = {
+        None: "—",
+        "done": "OK",
+        "no_perps": "No perps su entrambi",
+        "cg_error": "Errore CoinGecko",
+        "top_cex_not_bitget": "Top spot ≠ Bitget",
+        "no_bsc": "Nessun contratto BSC",
+        "no_pancake_or_low_liq": "LP non su Pancake o liquidità bassa",
+        "pancake_not_v3": "Pancake non V3 (richiesto V3)",
+        "seed_removed": "Rimossa dal seed (perps/intersezione)",
+    }
+    return mapping.get(status, status)
+
+def build_telegram_all3_message(dt_str: str,
+                                total_candidates: int,
+                                processed: int,
+                                s1_count: int,
+                                s2_count: int,
+                                s3_count: int,
+                                all3_list: List[Dict[str, Any]],
+                                new_list: List[Dict[str, Any]],
+                                removed_list: List[Dict[str, Any]]) -> str:
+    # titolo + panoramica funnel + elenco TOP + diff
+    lines = []
+    lines.append(f"✅ <b>DAILY TOP — {dt_str}</b>")
+    lines.append("")
+    lines.append(f"Funnel: candidati <code>{total_candidates}</code> | processati <code>{processed}</code>")
+    lines.append(f"S1 Perps: <code>{s1_count}</code> | S1+S2 Top=Bitget: <code>{s2_count}</code> | S1+S2+S3 Pancake(BSC): <code>{s3_count}</code>")
+    lines.append("")
+    lines.append("<b>TOP (tutti e 3 i parametri)</b>")
+    if not all3_list:
+        lines.append("—")
+    else:
+        # Mostriamo max 60 righe per messaggio
+        for r in all3_list[:60]:
+            liq = r.get("liq")
+            liq_s = "-" if liq is None else f"{int(liq):,}".replace(",", ".")
+            lines.append(f"• {r['symbol']} · {r['name']} · LP: {liq_s}$")
+        if len(all3_list) > 60:
+            lines.append(f"... (+{len(all3_list)-60})")
+    lines.append("")
+    lines.append("<b>Variazioni vs ultimo run</b>")
+    if new_list:
+        lines.append("➕ <b>NUOVE</b>")
+        for r in new_list[:40]:
+            liq = r.get("liq")
+            liq_s = "-" if liq is None else f"{int(liq):,}".replace(",", ".")
+            lines.append(f"  • {r['symbol']} · {r['name']} · LP: {liq_s}$")
+        if len(new_list) > 40:
+            lines.append(f"  ... (+{len(new_list)-40})")
+    else:
+        lines.append("➕ <b>NUOVE</b>\n  —")
+    if removed_list:
+        lines.append("➖ <b>RIMOSSE</b>")
+        for r in removed_list[:40]:
+            why = reason_human(r.get("why"))
+            lines.append(f"  • {r['symbol']} · {r['name']} · ({why})")
+        if len(removed_list) > 40:
+            lines.append(f"  ... (+{len(removed_list)-40})")
+    else:
+        lines.append("➖ <b>RIMOSSE</b>\n  —")
+    return "\n".join(lines)
+
+# --------------------------- Diff helpers --------------------------- #
+
+def load_last_all3(path: str) -> Dict[str, Any]:
+    return read_json(path) or {"ts": None, "items": []}
+
+def compute_counts(funnel_rows: List[FunnelRow]) -> Tuple[int, int, int]:
     processed = [r for r in funnel_rows if not r.skipped]
     s1 = [r for r in processed if r.s1_perps]
     s2 = [r for r in processed if r.s1_perps and r.s2_bitget]
     s3 = [r for r in processed if r.s1_perps and r.s2_bitget and r.s3_bsc_pancake]
-
-    all3 = [r for r in results if r.score() >= 2 and r.ok()]  # 2 OK: Bitget + Pancake
-    at_least2 = [r for r in funnel_rows if (not r.skipped and r.s1_perps and r.s2_bitget)]
-
-    def head(title: str) -> str:
-        return f"\n— {title} —\n"
-
-    def list_rows(rows: List[FunnelRow], limit: int = 25, extra: bool = False) -> str:
-        out = []
-        for r in rows[:limit]:
-            if extra and r.lp_pair:
-                liq = r.lp_pair.get("liquidityUsd")
-                out.append(f"{r.symbol} · {r.name} · LP: {int(liq):,}$".replace(",", "."))
-            else:
-                out.append(f"{r.symbol} · {r.name}")
-        if len(rows) > limit:
-            out.append(f"... (+{len(rows)-limit})")
-        return "\n".join(out) if out else "—"
-
-    lines = []
-    lines.append(f"Funnel\nCandidati: {total_candidates} | Processati: {len(processed)} | Skippati: {total_skipped}")
-
-    lines.append(head("Stage 1 — Perps su entrambi"))
-    lines.append(list_rows(s1, 15))
-
-    lines.append(head("Stage 1+2 — Top spot = Bitget"))
-    lines.append(list_rows(s2, 15))
-
-    lines.append(head("Stage 1+2+3 — BSC Pancake (main LP)"))
-    lines.append(list_rows(s3, 25, extra=True))
-
-    lines.append(head("Tutti e 3 i parametri (TOP)"))
-    if all3:
-        out = []
-        for r in all3[:25]:
-            lp = r.extra.get("lp_pair", {}) if r.extra else {}
-            liq = lp.get("liquidityUsd")
-            out.append(f"{r.symbol} · {r.name} · LP: {int(liq):,}$".replace(",", "."))
-        if len(all3) > 25:
-            out.append(f"... (+{len(all3)-25})")
-        lines.append("\n".join(out))
-    else:
-        lines.append("—")
-
-    lines.append(head("Almeno S1+S2"))
-    lines.append("\n".join([f"{r.symbol} · {r.name}" for r in at_least2[:25]]) if at_least2 else "—")
-    if len(at_least2) > 25:
-        lines.append(f"... (+{len(at_least2)-25})")
-
-    return "\n".join(lines)
+    return len(processed), len(s1), len(s2), len(s3)
 
 # --------------------------- CLI --------------------------- #
 
@@ -811,6 +865,10 @@ def main():
     settings = parse_args()
     ensure_dir(settings.cache_root); ensure_dir(settings.state_root)
 
+    # Where to write Telegram messages
+    tg_seed_path = joinp(settings.state_root, "telegram", "seed.txt")
+    tg_all3_path = joinp(settings.state_root, "telegram", "all3.txt")
+
     # Rate limiters
     cg_rl = RateLimiter(settings.rps_cg)
     ds_rl = RateLimiter(settings.rps_ds)
@@ -825,13 +883,22 @@ def main():
     else:
         log_info(f"Binance perps: {len(binance_bases)} | Bybit perps: {len(bybit_bases)}")
 
-    # Seeds
+    # Seeds + stats
     if settings.ids:
         id_syms = [(cid, "") for cid in settings.ids]
+        stats = SeedStats(
+            binance_count=len(binance_bases),
+            bybit_count=len(bybit_bases),
+            intersection_count=len(id_syms),
+            mapped_count=len(id_syms),
+            unmapped_count=0,
+            unmapped_examples=[],
+            seed_origin="perps" if settings.seed_from == "perps" else "cg",
+        )
         log_info(f"Seed da --ids: {len(id_syms)}")
     else:
         if settings.seed_from == "perps":
-            id_syms = build_seed_from_perps(cg_rl, binance_bases, bybit_bases)  # [(cg_id, symbol)]
+            id_syms, stats = build_seed_from_perps(cg_rl, binance_bases, bybit_bases)  # [(cg_id, symbol)], stats
         else:
             log_info("Scarico lista CoinGecko markets (seed cg)...")
             id_syms = list_market_id_symbols(settings.pages, settings.per_page, cg_rl)
@@ -846,6 +913,15 @@ def main():
                                         border_style="cyan"))
             else:
                 log_info(f"Candidati dopo filtro perps Binance&Bybit: {len(id_syms)} (da {before})")
+            stats = SeedStats(
+                binance_count=len(binance_bases),
+                bybit_count=len(bybit_bases),
+                intersection_count=len(inter),
+                mapped_count=len(id_syms),
+                unmapped_count=max(0, len(inter) - len(id_syms)),
+                unmapped_examples=[],
+                seed_origin="cg",
+            )
 
     # Stato persistente
     state = load_state()
@@ -883,12 +959,77 @@ def main():
 
     # Salva stato e stampa terminal
     save_state(state)
-    print_results(results, funnel_rows, total_candidates=len(id_syms))
+    total_candidates = len(id_syms)
+    print_results(results, funnel_rows, total_candidates=total_candidates)
 
-    # --- Telegram-friendly block (sempre stampato in chiaro) ---
-    report = build_telegram_report(results, funnel_rows, total_candidates=len(id_syms))
-    print("\n==================== TELEGRAM REPORT ====================\n")
-    print(report)
+    # --- Calcolo conteggi funnel per il messaggio ---
+    processed_count, s1_count, s2_count, s3_count = compute_counts(funnel_rows)
+
+    # --- All3 current list (per Telegram + storico) ---
+    all3_results = [r for r in results if r.score() >= 2 and r.ok()]
+    all3_list = []
+    for r in all3_results:
+        lp = (r.extra or {}).get("lp_pair", {})
+        all3_list.append({
+            "id": r.id,
+            "symbol": r.symbol,
+            "name": r.name,
+            "liq": lp.get("liquidityUsd"),
+            "pairAddress": (lp.get("pairAddress") or "").lower(),
+            "dexId": lp.get("dexId"),
+        })
+
+    # --- Diff con storico precedente ---
+    last_path = joinp(settings.state_root, "last_all3.json")
+    last = load_last_all3(last_path)
+    last_items = last.get("items", [])
+    last_ids = {x["id"] for x in last_items}
+
+    curr_ids = {x["id"] for x in all3_list}
+    new_ids = curr_ids - last_ids
+    removed_ids = last_ids - curr_ids
+
+    # Map utili
+    curr_by_id = {x["id"]: x for x in all3_list}
+    last_by_id = {x["id"]: x for x in last_items}
+    # Per capire il motivo di rimozione, guardiamo lo stato attuale o se non c'è, seed_removed
+    state_index = read_json(state_path()) or {}
+    candidates_set = {cid for cid, _ in id_syms}
+
+    removed_list = []
+    for rid in sorted(list(removed_ids)):
+        prev = last_by_id.get(rid, {})
+        st = state_index.get(rid, {})
+        why = st.get("status")
+        if rid not in candidates_set:
+            why = "seed_removed"
+        removed_list.append({
+            "id": rid,
+            "symbol": prev.get("symbol", "?"),
+            "name": prev.get("name", "?"),
+            "why": why
+        })
+
+    new_list = [curr_by_id[i] for i in sorted(list(new_ids))]
+
+    # --- Persist current all3 for next run ---
+    write_json(last_path, {"ts": now_ts(), "items": all3_list})
+
+    # --- Build Telegram messages ---
+    seed_msg = build_telegram_seed_message(stats)
+    dt_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
+    all3_msg = build_telegram_all3_message(dt_str, total_candidates, processed_count, s1_count, s2_count, s3_count,
+                                           all3_list, new_list, removed_list)
+
+    # --- Write Telegram files (to be picked up by GH Actions) ---
+    write_text(tg_seed_path, seed_msg)
+    write_text(tg_all3_path, all3_msg)
+
+    # Inoltre stampiamo un blocco finale testuale (utile in locale)
+    print("\n==================== TELEGRAM SEED ====================\n")
+    print(seed_msg)
+    print("\n==================== TELEGRAM DAILY TOP ====================\n")
+    print(all3_msg)
 
 if __name__ == "__main__":
     main()
