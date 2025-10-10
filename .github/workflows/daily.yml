@@ -56,7 +56,7 @@ jobs:
           export LC_ALL=C.UTF-8
           export LANG=C.UTF-8
 
-          CMD="python run_pipeline.py --rpc https://bsc-dataseed.binance.org --min-liq 20000 --workers 12 --max-tickers-scan 40 --dominance 0.30 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100 --limit 5"
+          CMD="python run_pipeline.py --rpc https://bsc-dataseed.binance.org --min-liq 20000 --workers 12 --max-tickers-scan 40 --dominance 0.30 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100"
           echo "Running: $CMD"
 
           mkdir -p state/telegram
