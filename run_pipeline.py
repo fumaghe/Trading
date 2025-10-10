@@ -606,9 +606,9 @@ def main():
         msg_coin = (
             f"💠 <b>{htmlesc(symbol)}</b> — {htmlesc(name)}\n"
             f"Market Cap: <b>{mc_str}</b>\n"
-            f"Liquidità: <b>{lp_str}</b>\n"
-            f"Prezzo (base): <b>{price_str}</b>\n"
-            f"Pair: <a href=\"{row['url']}\">{row['pair']}</a>\n"
+            f"Liquidity: <b>{lp_str}</b>\n"
+            f"Price: <b>{price_str}</b>\n"
+            f"Address: <a href=\"{row['url']}\">{row['pair']}</a>\n"
             f"<code>{row['pair']}</code>\n\n"
             f"<b>Token1</b>: {htmlesc(push['token1_symbol'])}\n"
             f"+50%: {htmlesc(plus50_disp)}\n"
@@ -677,7 +677,7 @@ def main():
             return "   n.d."
 
     lines = []
-    lines.append("🏁 <b>Classifica (SCORE100 = MC / Costo +100%)</b>\n")
+    lines.append("📈 <b>RANKING (SCORE100 = MC / Costo +100%)</b>\n")
     pre = []
     pre.append(f"{'#':>2}  {'SYMBOL':8} {'NAME':18}  {'S50':>10} {'S100':>10} {'S200':>10}")
     pre.append("-"*62)
