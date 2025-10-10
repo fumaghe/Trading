@@ -12,6 +12,16 @@ from pathlib import Path
 
 import requests
 
+"""
+Pipeline: screener TOP (DexScreener + CoinGecko) -> analisi DeFi su pool v3 con importi in token1
+e conversione degli importi in USD (≈ USDT) usando priceUsd della *stessa* pair DexScreener.
+Ordina i risultati per SCORE100 = (market cap USD) / (costo +100% in USD), in ordine decrescente.
+Mostra anche SCORE50 e SCORE200.
+
+Esempio:
+python run_pipeline.py --rpc https://bsc-dataseed.binance.org --min-liq 200000 --workers 12 --max-tickers-scan 40 --dominance 0.30 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100
+"""
+
 UA = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
@@ -20,6 +30,7 @@ HTTP_TIMEOUT = 30
 HEADERS = {"Accept": "application/json", "User-Agent": UA}
 
 DEX_PAIRS_URL = "https://api.dexscreener.com/latest/dex/pairs/bsc/{pair}"
+DEX_TOKEN_URL = "https://api.dexscreener.com/latest/dex/tokens/{address}"
 CG_LIST_URL = "https://api.coingecko.com/api/v3/coins/list?include_platform=true"
 CG_COIN_URL = "https://api.coingecko.com/api/v3/coins/{id}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=false"
 
@@ -98,20 +109,55 @@ def parse_top_only(stdout: str):
             entries.append({"symbol": symbol, "name": name, "pair": pair, "lp_usd": lp_usd})
     return entries
 
-# ---------------- marketcap helpers ---------------- #
+# ---------------- marketcap & pair info helpers ---------------- #
 
 def fetch_ds_pair_info(pair: str):
+    """
+    Ritorna info principali della pair da DexScreener, inclusi:
+    - marketcap (o fdv)
+    - dexId
+    - priceUsd (USD per 1 baseToken mostrato da DS)
+    - baseToken {address, symbol}
+    - quoteToken {address, symbol}
+    """
     try:
         url = DEX_PAIRS_URL.format(pair=pair)
         r = requests.get(url, headers=HEADERS, timeout=HTTP_TIMEOUT)
         r.raise_for_status()
         j = r.json()
         p = (j.get("pairs") or [None])[0] or {}
+
         mc = p.get("marketCap") or p.get("fdv")
-        dexId = p.get("dexId")
-        return {"marketcap": float(mc) if mc is not None else None, "dexId": dexId}
+        base = p.get("baseToken") or {}
+        quote = p.get("quoteToken") or {}
+        priceUsd = p.get("priceUsd")
+
+        return {
+            "marketcap": float(mc) if mc is not None else None,
+            "dexId": p.get("dexId"),
+            "priceUsd": float(priceUsd) if priceUsd is not None else None,  # USD per 1 baseToken
+            "baseToken": {"address": (base.get("address") or "").lower(), "symbol": base.get("symbol")},
+            "quoteToken": {"address": (quote.get("address") or "").lower(), "symbol": quote.get("symbol")},
+        }
     except Exception:
-        return {"marketcap": None, "dexId": None}
+        return {"marketcap": None, "dexId": None, "priceUsd": None, "baseToken": {}, "quoteToken": {}}
+
+def fetch_ds_token_price_usd_for_pair(token_addr: str, pair_addr: str):
+    """
+    Fallback: cerca priceUsd per uno specifico token all'interno della *stessa* pair.
+    """
+    try:
+        url = DEX_TOKEN_URL.format(address=token_addr)
+        r = requests.get(url, headers=HEADERS, timeout=HTTP_TIMEOUT)
+        r.raise_for_status()
+        j = r.json()
+        for p in j.get("pairs", []) or []:
+            if (p.get("pairAddress") or "").lower() == pair_addr.lower():
+                val = p.get("priceUsd")
+                return float(val) if val is not None else None
+    except Exception:
+        pass
+    return None
 
 def load_cg_list_cached(cache_path: Path):
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -171,9 +217,32 @@ def format_usd(x):
     except Exception:
         return "n.d."
 
+# ---------------- Web3 helper (retry & reuse) ---------------- #
+
+def make_web3_with_retry(defi_module, rpc_url: str, attempts: int = 3, base_sleep: float = 2.0):
+    last_err = None
+    for i in range(attempts):
+        try:
+            w3 = defi_module.Web3(defi_module.Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 45}))
+            defi_module._inject_poa(w3)
+            if w3.is_connected():
+                return w3
+            last_err = RuntimeError("w3.is_connected() = False")
+        except Exception as e:
+            last_err = e
+        time.sleep(base_sleep * (i + 1))
+    raise RuntimeError(f"Connessione RPC fallita dopo {attempts} tentativi: {last_err}")
+
 # ---------------- defi compute ---------------- #
 
-def compute_push_amounts_with_defi(pool: str, rpc_url: str):
+def compute_push_amounts_with_defi(pool: str, rpc_url: str, w3=None):
+    """
+    Carica defiFunzionante.py, legge on-chain la pool v3 e calcola:
+    - P0 (token1 per 1 token0)
+    - importi token1 necessari per +50%, +100%, +200%
+    Ritorna anche address/symbol di token0/1 per fare conversioni coerenti.
+    Se 'w3' è fornito, riusa la connessione; altrimenti la crea con retry.
+    """
     import importlib.util
 
     mod_path = Path(__file__).with_name("defiFunzionante.py")
@@ -184,10 +253,8 @@ def compute_push_amounts_with_defi(pool: str, rpc_url: str):
     defi = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(defi)  # type: ignore
 
-    w3 = defi.Web3(defi.Web3.HTTPProvider(rpc_url, request_kwargs={"timeout": 30}))
-    defi._inject_poa(w3)
-    if not w3.is_connected():
-        raise RuntimeError("Connessione RPC fallita. Controlla --rpc.")
+    if w3 is None:
+        w3 = make_web3_with_retry(defi, rpc_url, attempts=3, base_sleep=2.0)
 
     pool_addr = defi.Web3.to_checksum_address(pool)
     pool_contract = w3.eth.contract(address=pool_addr, abi=defi.UNISWAP_V3_POOL_MINI_ABI)
@@ -200,14 +267,28 @@ def compute_push_amounts_with_defi(pool: str, rpc_url: str):
         factors=[Decimal("1.5"), Decimal("2.0"), Decimal("3.0")],  # +50, +100, +200
     )
 
-    def fmt(r):
-        return r["token1_needed"]  # es. "123.456789 USDT"
+    def parse_amount_token1(r):
+        # r["token1_needed"] è una stringa "123.456789 SYMBOL"
+        s = r["token1_needed"] or "0"
+        num = (s.split()[0] if s else "0")
+        try:
+            return Decimal(num)
+        except Exception:
+            return Decimal("0")
 
     return {
+        "token0_symbol": snapshot.token0.symbol,
+        "token0_address": snapshot.token0.address.lower(),
         "token1_symbol": snapshot.token1.symbol,
-        "plus50": fmt(rows[0]),
-        "plus100": fmt(rows[1]),
-        "plus200": fmt(rows[2]),
+        "token1_address": snapshot.token1.address.lower(),
+        "P0": P0,  # Decimal: token1 per 1 token0
+        "plus50_token1": parse_amount_token1(rows[0]),
+        "plus100_token1": parse_amount_token1(rows[1]),
+        "plus200_token1": parse_amount_token1(rows[2]),
+        # mantieni anche le stringhe originali se vuoi loggarle
+        "plus50_str": rows[0]["token1_needed"],
+        "plus100_str": rows[1]["token1_needed"],
+        "plus200_str": rows[2]["token1_needed"],
     }
 
 def classify_non_v3_error(err_msg: str) -> bool:
@@ -224,7 +305,7 @@ def classify_non_v3_error(err_msg: str) -> bool:
 # ---------------- main ---------------- #
 
 def main():
-    ap = argparse.ArgumentParser(description="Pipeline: screener TOP (con pool) -> analisi DeFi (+50, +100, +200)")
+    ap = argparse.ArgumentParser(description="Pipeline: screener TOP (con pool) -> analisi DeFi (+50, +100%, +200%) con conversione ≈ USDT e SCORE = MC/Cost")
     ap.add_argument("--rpc", default="https://bsc-dataseed.binance.org")
     ap.add_argument("--python-bin", default=sys.executable)
     ap.add_argument("--min-liq", type=int, default=200000)
@@ -274,12 +355,28 @@ def main():
         log("Nessuna coin in TOP trovata dall'output di test4.py.")
         sys.exit(0)
 
+    # eventuale limit
+    if args.limit and args.limit > 0:
+        coins = coins[:args.limit]
+
     n = len(coins)
     log(f"==> Trovate {n} coin in TOP. Inizio analisi per-pool...")
 
     # Cache CG
     cg_list = None
     cg_cache = Path(".cache") / "cg_coins_list_include_platform.json"
+
+    # ---- Prepara una connessione Web3 condivisa (con retry) ----
+    import importlib.util
+    mod_path = Path(__file__).with_name("defiFunzionante.py")
+    spec = importlib.util.spec_from_file_location("defiFunzionante", str(mod_path))
+    defi_mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(defi_mod)  # type: ignore
+    try:
+        w3_shared = make_web3_with_retry(defi_mod, args.rpc, attempts=3, base_sleep=2.0)
+    except Exception as e:
+        log_err(0, 0, "-", "-", f"Impossibile connettersi all'RPC iniziale: {e}")
+        sys.exit(1)
 
     rows = []
 
@@ -292,20 +389,24 @@ def main():
         t0 = time.perf_counter()
         log_step(idx, n, symbol, pair, f"START | Name='{name}' | LP={format_usd(lp_usd)}")
 
-        # 2) Market cap
+        # 2) DexScreener pair info (marketcap, priceUsd, base/quote token)
         try:
-            log_step(idx, n, symbol, pair, "DexScreener: fetch marketcap...")
+            log_step(idx, n, symbol, pair, "DexScreener: fetch pair info...")
             ds_t0 = time.perf_counter()
             ds = fetch_ds_pair_info(pair)
             ds_dt = time.perf_counter() - ds_t0
             marketcap_usd = ds.get("marketcap")
             dexId = ds.get("dexId")
-            log_step(idx, n, symbol, pair, f"DexScreener OK in {ds_dt:.2f}s | dexId={dexId} | mcap={format_usd(marketcap_usd) if marketcap_usd else 'n.d.'}")
+            log_step(
+                idx, n, symbol, pair,
+                f"DexScreener OK in {ds_dt:.2f}s | dexId={dexId} | mcap={format_usd(marketcap_usd) if marketcap_usd else 'n.d.'}"
+            )
         except Exception as e:
+            ds = {"marketcap": None, "dexId": None, "priceUsd": None, "baseToken": {}, "quoteToken": {}}
             marketcap_usd = None
             log_err(idx, n, symbol, pair, f"DexScreener KO: {e}")
 
-        # 2b) CoinGecko fallback
+        # 2b) CoinGecko fallback per marketcap
         if (marketcap_usd is None) and (not args.no_cg_fallback):
             try:
                 if cg_list is None:
@@ -326,22 +427,177 @@ def main():
         try:
             log_step(idx, n, symbol, pair, "DeFi: compute +50/+100/+200...")
             d0 = time.perf_counter()
-            push = compute_push_amounts_with_defi(pair, args.rpc)
+            push = compute_push_amounts_with_defi(pair, args.rpc, w3=w3_shared)
             ddt = time.perf_counter() - d0
-            plus50 = push["plus50"]
-            plus100 = push["plus100"]
-            plus200 = push["plus200"]
-            log_step(idx, n, symbol, pair, f"DeFi OK in {ddt:.2f}s | token1={push['token1_symbol']} | +50={plus50} | +100={plus100} | +200={plus200}")
+
+            # stringhe originali utili per log
+            plus50_str = push["plus50_str"]
+            plus100_str = push["plus100_str"]
+            plus200_str = push["plus200_str"]
+
+            log_step(idx, n, symbol, pair, f"DeFi OK in {ddt:.2f}s | token1={push['token1_symbol']} | +50={plus50_str} | +100={plus100_str} | +200={plus200_str}")
         except Exception as e:
             msg = str(e)
             if args.per_pool_debug:
                 log_err(idx, n, symbol, pair, f"DEBUG ERR: {msg}")
             if classify_non_v3_error(msg):
-                plus50 = plus100 = plus200 = "n/a (non v3 o pool incompatibile)"
+                plus50_disp = plus100_disp = plus200_disp = "n/a (non v3 o pool incompatibile)"
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "name": name,
+                        "pair": pair,
+                        "lp_usd": lp_usd,
+                        "marketcap_usd": marketcap_usd,
+                        "plus50": plus50_disp,
+                        "plus100": plus100_disp,
+                        "plus200": plus200_disp,
+                        "plus50_usd_value": None,
+                        "plus100_usd_value": None,
+                        "plus200_usd_value": None,
+                        "score50": None,
+                        "score100": None,
+                        "score200": None,
+                    }
+                )
                 log_step(idx, n, symbol, pair, "DeFi risultato: n/a (non v3 o pool incompatibile)")
+                continue
             else:
-                plus50 = plus100 = plus200 = f"ERR ({msg})"
-                log_step(idx, n, symbol, pair, f"DeFi risultato: {plus50}")
+                plus50_disp = plus100_disp = plus200_disp = f"ERR ({msg})"
+                rows.append(
+                    {
+                        "symbol": symbol,
+                        "name": name,
+                        "pair": pair,
+                        "lp_usd": lp_usd,
+                        "marketcap_usd": marketcap_usd,
+                        "plus50": plus50_disp,
+                        "plus100": plus100_disp,
+                        "plus200": plus200_disp,
+                        "plus50_usd_value": None,
+                        "plus100_usd_value": None,
+                        "plus200_usd_value": None,
+                        "score50": None,
+                        "score100": None,
+                        "score200": None,
+                    }
+                )
+                log_step(idx, n, symbol, pair, f"DeFi risultato: {plus50_disp}")
+                continue
+
+        # 4) Conversione ≈ USDT: calcolo USD per 1 token1 (U1) coerente con P0 e con la stessa pair
+        U1 = None  # USD/token1
+
+        # Override hard per stablecoin note su BSC
+        STABLE_SYMS = {"USDT", "USDC", "BUSD", "FDUSD", "DAI", "USDD", "USDP", "TUSD", "USD1"}
+        STABLE_ADDRS_BSC = {
+            # USDT
+            "0x55d398326f99059ff775485246999027b3197955",
+            # USDC (Binance-Peg)
+            "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
+            # BUSD (legacy)
+            "0xe9e7cea3dedca5984780bafc599bd69add087d56",
+            # DAI (Binance-Peg)
+            "0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3",
+            # USDD (bridged)
+            "0xd17479997f34dd9156deef8f95a52d81d265be9c",
+            # USDP (Pax Dollar)
+            "0x1456688345527be1f37e9e627da0837d6f08c925",
+            # TUSD (TrueUSD)
+            "0x14016e85a25aeb13065688cafb43044c2ef86784",
+            # USD1 (alcune pool su BSC)
+            "0xbd0a4bf098261673d5e6e600fd87ddcd756efb62",
+        }
+
+        try:
+            P0_dec = push["P0"]  # Decimal (token1 per 1 token0)
+            base_addr = ((ds.get("baseToken") or {}).get("address") or "").lower()
+            priceUsd = ds.get("priceUsd")  # USD per 1 baseToken (DexScreener)
+
+            # 4a) Stable-override: se token1 è una stable, 1 token1 ≈ 1 USD
+            if (push["token1_symbol"] in STABLE_SYMS) or (push["token1_address"] in STABLE_ADDRS_BSC):
+                U1 = Decimal("1")
+
+            # 4b) DS price → U1 (se non impostato dall'override)
+            if U1 is None:
+                # Caso 1: base=token0 -> USD/token1 = (USD/token0) / (token1/token0)
+                if priceUsd is not None and base_addr == push["token0_address"]:
+                    U1 = Decimal(str(priceUsd)) / P0_dec
+                # Caso 2: base=token1 -> USD/token1 = priceUsd
+                elif priceUsd is not None and base_addr == push["token1_address"]:
+                    U1 = Decimal(str(priceUsd))
+                else:
+                    # Caso 3: fallback — prova a leggere il prezzo del token1 nella stessa pair
+                    alt = fetch_ds_token_price_usd_for_pair(push["token1_address"], pair)
+                    if alt is not None:
+                        U1 = Decimal(str(alt))
+
+            # 4c) Sanity check: evita 0 o valori irrisori
+            if U1 is not None:
+                if U1 <= 0 or U1 < Decimal("1e-9"):
+                    U1 = None
+
+            if args.per_pool_debug:
+                log_step(idx, n, symbol, pair, f"DEBUG price: token1={push['token1_symbol']} U1={U1} | baseAddr={base_addr} priceUsd={priceUsd} P0={P0_dec}")
+        except Exception as e:
+            if args.per_pool_debug:
+                log_err(idx, n, symbol, pair, f"Conversione USD fallback ERR: {e}")
+            U1 = None
+
+        # Format helper
+        def decfmt(d: Decimal, decimals: int = 6) -> str:
+            try:
+                q = Decimal("1." + "0"*decimals)
+                return str(d.quantize(q).normalize())
+            except Exception:
+                return str(d)
+
+        def usd_fmt_from_dec(d: Decimal) -> str:
+            try:
+                return format_usd(d)
+            except Exception:
+                return "n.d."
+
+        def safe_div(num, den):
+            try:
+                if num is None or den is None:
+                    return None
+                if float(den) == 0.0:
+                    return None
+                return float(num) / float(den)
+            except Exception:
+                return None
+
+        # Importi token1 (numerici)
+        a50 = push["plus50_token1"]
+        a100 = push["plus100_token1"]
+        a200 = push["plus200_token1"]
+
+        # Valori USD numerici (per score), se disponibili
+        if U1 is not None:
+            plus50_usd_value = float(a50 * U1)
+            plus100_usd_value = float(a100 * U1)
+            plus200_usd_value = float(a200 * U1)
+        else:
+            plus50_usd_value = plus100_usd_value = plus200_usd_value = None
+
+        # SCOREs = marketcap / costo(+X%)
+        marketcap_val = marketcap_usd if marketcap_usd is not None else None
+        score50  = safe_div(marketcap_val, plus50_usd_value)
+        score100 = safe_div(marketcap_val, plus100_usd_value)
+        score200 = safe_div(marketcap_val, plus200_usd_value)
+
+        # Stringhe finali “TOKEN1 | ≈ USDT”
+        if U1 is not None:
+            usd50 = usd_fmt_from_dec(a50 * U1)
+            usd100 = usd_fmt_from_dec(a100 * U1)
+            usd200 = usd_fmt_from_dec(a200 * U1)
+        else:
+            usd50 = usd100 = usd200 = "n.d."
+
+        plus50_disp = f"{decfmt(a50)} {push['token1_symbol']} | {usd50}"
+        plus100_disp = f"{decfmt(a100)} {push['token1_symbol']} | {usd100}"
+        plus200_disp = f"{decfmt(a200)} {push['token1_symbol']} | {usd200}"
 
         rows.append(
             {
@@ -350,9 +606,15 @@ def main():
                 "pair": pair,
                 "lp_usd": lp_usd,
                 "marketcap_usd": marketcap_usd,
-                "plus50": plus50,
-                "plus100": plus100,
-                "plus200": plus200,
+                "plus50": plus50_disp,
+                "plus100": plus100_disp,
+                "plus200": plus200_disp,
+                "plus50_usd_value": plus50_usd_value,
+                "plus100_usd_value": plus100_usd_value,
+                "plus200_usd_value": plus200_usd_value,
+                "score50": score50,
+                "score100": score100,
+                "score200": score200,
             }
         )
 
@@ -364,24 +626,40 @@ def main():
 
     total_dt = time.perf_counter() - start_all
 
-    # 4) Tabella finale
+    # 5) Ordinamento per SCORE100 (desc). None in fondo.
+    rows.sort(key=lambda r: (r.get('score100') if r.get('score100') is not None else -float('inf')), reverse=True)
+
+    # 6) Tabella finale
     headers = [
         "SYMBOL",
         "NAME",
         "PAIR",
         "LP (USD)",
         "MARKET CAP (USD)",
-        "TOKEN1 per +50%",
-        "TOKEN1 per +100%",
-        "TOKEN1 per +200%",
+        "TOKEN1 per +50%  |  ≈ USDT",
+        "TOKEN1 per +100% |  ≈ USDT",
+        "TOKEN1 per +200% |  ≈ USDT",
+        "SCORE50",
+        "SCORE100",
+        "SCORE200",
     ]
     print("\n================= RISULTATI FINALI =================")
     print(f"(Totale: {len(rows)}) | Tempo totale: {total_dt:.2f}s")
     print(" | ".join(headers))
-    print("-" * 120)
+    print("-" * 180)
+
+    def fmt_score(x):
+        try:
+            return f"{x:,.2f}×"
+        except Exception:
+            return "n.d."
+
     for r in rows:
         lp_fmt = format_usd(r["lp_usd"])
         mc_fmt = format_usd(r["marketcap_usd"]) if r["marketcap_usd"] is not None else "n.d."
+        s50 = fmt_score(r.get("score50")) if r.get("score50") is not None else "n.d."
+        s100 = fmt_score(r.get("score100")) if r.get("score100") is not None else "n.d."
+        s200 = fmt_score(r.get("score200")) if r.get("score200") is not None else "n.d."
         line = [
             r["symbol"],
             r["name"],
@@ -391,6 +669,9 @@ def main():
             r["plus50"],
             r["plus100"],
             r["plus200"],
+            s50,
+            s100,
+            s200,
         ]
         print(" | ".join(line), flush=True)
 

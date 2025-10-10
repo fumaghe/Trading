@@ -365,14 +365,11 @@ def ds_cache_path(addr: str) -> str:
     return joinp(settings.cache_root, "dexscreener", f"{addr.lower()}.json")
 
 def main_bsc_pair_on_pancake(addr: str, ds_rl: RateLimiter) -> Optional[Dict[str, Any]]:
-    path = ds_cache_path(addr)
-    j = cache_get(path, settings.ttl_dexscreener_sec)
-    if j is not None: data = j
-    else:
-        ds_rl.wait()
-        url = DEXSCREENER_TOKEN.format(address=addr)
-        data = Http.get(url).json()
-        write_json(path, data)
+    # NO CACHE: chiama sempre DexScreener e NON salva su disco
+    ds_rl.wait()
+    url = DEXSCREENER_TOKEN.format(address=addr)
+    data = Http.get(url).json()
+
     pairs = data.get("pairs") or []
     best, best_liq = None, -1.0
     for p in pairs:
@@ -389,17 +386,18 @@ def main_bsc_pair_on_pancake(addr: str, ds_rl: RateLimiter) -> Optional[Dict[str
         return None
     return best
 
+
 # --------------------------- State index --------------------------- #
 
 def state_path() -> str:
     return joinp(settings.state_root, "index.json")
 
 def load_state() -> Dict[str, Any]:
-    j = read_json(state_path()) or {}
-    return j
+    return {}
 
 def save_state(state: Dict[str, Any]):
-    write_json(state_path(), state)
+    pass
+
 
 def stale_by_days(ts: Optional[int], days: int) -> bool:
     # FIX: se days <= 0 allora NON skippiamo mai (sempre "stale" => rielabora)

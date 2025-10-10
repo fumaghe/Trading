@@ -1,12 +1,12 @@
-name: Daily Screener (bash)
+name: Daily Screener (run_pipeline)
 
 on:
   schedule:
-    - cron: "30 */8 * * *" 
+    - cron: "30 */8 * * *"
   workflow_dispatch: {}
 
 permissions:
-  contents: write  # serve per committare i file di stato nel repo
+  contents: write
 
 jobs:
   run-screener:
@@ -44,10 +44,11 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            pip install requests tenacity rich
+            # aggiungo web3 perché defiFunzionante.py lo usa
+            pip install requests tenacity rich web3
           fi
 
-      - name: Run screener
+      - name: Run run_pipeline.py
         id: screener
         shell: bash
         run: |
@@ -55,7 +56,7 @@ jobs:
           export LC_ALL=C.UTF-8
           export LANG=C.UTF-8
 
-          CMD="python test3.py --seed-from perps --workers 12 --min-liq 200000 --max-tickers-scan 40 --dominance 0.30 --skip-unchanged-days 0 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 50"
+          CMD="python run_pipeline.py --rpc https://bsc-dataseed.binance.org --min-liq 20000 --workers 12 --max-tickers-scan 40 --dominance 0.30 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100"
           echo "Running: $CMD"
 
           OUTFILE=out.txt
@@ -65,65 +66,43 @@ jobs:
           CODE=$?
           echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
 
-          # File generati dallo script (telegram-friendly)
-          SEED_FILE="state/telegram/seed.txt"
-          ALL3_FILE="state/telegram/all3.txt"
+          # Sanifica e prepara messaggio Telegram
+          SAN_OUT="out.sanitized.txt"
+          SAN_ERR="err.sanitized.txt"
+          tr -d '\000' < "$OUTFILE" > "$SAN_OUT" || true
+          tr -d '\000' < "$ERRFILE" > "$SAN_ERR" || true
 
-          # Sanifica da eventuali NUL
-          mkdir -p state/telegram
-          SAN_SEED="state/telegram/seed.sanitized.txt"
-          SAN_ALL3="state/telegram/all3.sanitized.txt"
-          [ -f "$SEED_FILE" ] && tr -d '\000' < "$SEED_FILE" > "$SAN_SEED"
-          [ -f "$ALL3_FILE" ] && tr -d '\000' < "$ALL3_FILE" > "$SAN_ALL3"
+          # Compone un messaggio unico (stdout + eventuale coda di stderr)
+          TAIL_ERR="$(tail -n 50 "$SAN_ERR" 2>/dev/null || true)"
+          {
+            echo "==== run_pipeline output ===="
+            cat "$SAN_OUT"
+            if [ -s "$SAN_ERR" ]; then
+              echo ""
+              echo "---- last 50 lines of STDERR ----"
+              echo "$TAIL_ERR"
+            fi
+          } > msg.txt
 
-          # Usa delimitatori unici per evitare collisioni con il contenuto
-          DELIM_SEED="EOF_SEED_$(date +%s%N)"
-          DELIM_ALL3="EOF_ALL3_$(date +%s%N)"
+          # Troncamento per Telegram
+          DELIM="EOF_MSG_$(date +%s%N)"
+          {
+            printf "msg_main<<%s\n" "$DELIM"
+            head -c 3900 msg.txt
+            printf "\n%s\n" "$DELIM"
+          } >> "$GITHUB_OUTPUT"
 
-          if [ -f "$SAN_SEED" ]; then
-            {
-              printf "msg_seed<<%s\n" "$DELIM_SEED"
-              cat "$SAN_SEED"
-              printf "\n%s\n" "$DELIM_SEED"
-            } >> "$GITHUB_OUTPUT"
-          else
-            {
-              printf "msg_seed<<%s\n" "$DELIM_SEED"
-              echo "⚠️ Nessun seed summary generato."
-              printf "%s\n" "$DELIM_SEED"
-            } >> "$GITHUB_OUTPUT"
-          fi
+      # (OPZIONALE) Se non hai più file di stato da committare, puoi rimuovere del tutto questo step.
+      # Lo lascio commentato per chiarezza.
+      # - name: Persist screener state to repo
+      #   run: |
+      #     git config user.name  "github-actions[bot]"
+      #     git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+      #     git add -A state/last_all3.json state/index.json || true
+      #     git commit -m "chore(screener): update state [skip ci]" || echo "No changes to commit"
+      #     git push || echo "Nothing to push"
 
-          if [ -f "$SAN_ALL3" ]; then
-            {
-              printf "msg_all3<<%s\n" "$DELIM_ALL3"
-              cat "$SAN_ALL3"
-              printf "\n%s\n" "$DELIM_ALL3"
-            } >> "$GITHUB_OUTPUT"
-          else
-            {
-              printf "msg_all3<<%s\n" "$DELIM_ALL3"
-              echo "⚠️ Nessun report TOP generato."
-              printf "%s\n" "$DELIM_ALL3"
-            } >> "$GITHUB_OUTPUT"
-          fi
-
-          # Header locale
-          if [ $CODE -eq 0 ]; then
-            echo "✅ Screener OK" > header.txt
-          else
-            echo "❌ Screener ERROR ($CODE)" > header.txt
-          fi
-
-      - name: Persist screener state to repo
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A state/last_all3.json state/index.json
-          git commit -m "chore(screener): update state [skip ci]" || echo "No changes to commit"
-          git push || echo "Nothing to push"
-
-      - name: Send Telegram — Seed summary
+      - name: Send Telegram — run_pipeline output
         if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
         shell: bash
         run: |
@@ -134,38 +113,21 @@ jobs:
           else
             HEADER="❌ Screener ERROR ($EXIT)"
           fi
-          TEXT="$(printf "%s\n\n%s" "$HEADER" "${{ steps.screener.outputs.msg_seed }}")"
+          TEXT="$(printf "%s\n\n%s" "$HEADER" "${{ steps.screener.outputs.msg_main }}")"
           TRUNC="$(printf "%s" "$TEXT" | head -c 3900)"
           curl -sS -X POST "$API" \
             --data-urlencode "chat_id=${TG_CHAT_ID}" \
             --data-urlencode "text=$TRUNC" \
             -d "disable_web_page_preview=true" \
             -d "parse_mode=HTML" \
-          || echo "Telegram send failed (seed)"
-
-      - name: Send Telegram — Daily TOP + diff
-        if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
-        shell: bash
-        run: |
-          API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
-          TEXT="${{ steps.screener.outputs.msg_all3 }}"
-          TRUNC="$(printf "%s" "$TEXT" | head -c 3900)"
-          curl -sS -X POST "$API" \
-            --data-urlencode "chat_id=${TG_CHAT_ID}" \
-            --data-urlencode "text=$TRUNC" \
-            -d "disable_web_page_preview=true" \
-            -d "parse_mode=HTML" \
-          || echo "Telegram send failed (all3)"
+          || echo "Telegram send failed"
 
       - name: Upload logs (artifact)
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: screener-logs
+          name: run-pipeline-logs
           path: |
             out.txt
             err.txt
-            state/telegram/seed.txt
-            state/telegram/all3.txt
-            state/last_all3.json
-            state/index.json
+            msg.txt
