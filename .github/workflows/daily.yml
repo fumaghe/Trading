@@ -44,7 +44,7 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           else
-            # aggiungo web3 perché defiFunzionante.py lo usa
+            # web3 serve a defiFunzionante.py
             pip install requests tenacity rich web3
           fi
 
@@ -56,9 +56,10 @@ jobs:
           export LC_ALL=C.UTF-8
           export LANG=C.UTF-8
 
-          CMD="python run_pipeline.py --rpc https://bsc-dataseed.binance.org --min-liq 20000 --workers 12 --max-tickers-scan 40 --dominance 0.30 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100"
+          CMD="python run_pipeline.py --rpc https://bsc-dataseed.binance.org --min-liq 20000 --workers 12 --max-tickers-scan 40 --dominance 0.30 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100 --limit 5"
           echo "Running: $CMD"
 
+          mkdir -p state/telegram
           OUTFILE=out.txt
           ERRFILE=err.txt
 
@@ -66,17 +67,16 @@ jobs:
           CODE=$?
           echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
 
-          # Sanifica e prepara messaggio Telegram
+          # Sanifica e prepara log sintetici
           SAN_OUT="out.sanitized.txt"
           SAN_ERR="err.sanitized.txt"
           tr -d '\000' < "$OUTFILE" > "$SAN_OUT" || true
           tr -d '\000' < "$ERRFILE" > "$SAN_ERR" || true
 
-          # Compone un messaggio unico (stdout + eventuale coda di stderr)
           TAIL_ERR="$(tail -n 50 "$SAN_ERR" 2>/dev/null || true)"
           {
-            echo "==== run_pipeline output ===="
-            cat "$SAN_OUT"
+            echo "==== run_pipeline output (truncated) ===="
+            head -n 200 "$SAN_OUT" || true
             if [ -s "$SAN_ERR" ]; then
               echo ""
               echo "---- last 50 lines of STDERR ----"
@@ -84,25 +84,7 @@ jobs:
             fi
           } > msg.txt
 
-          # Troncamento per Telegram
-          DELIM="EOF_MSG_$(date +%s%N)"
-          {
-            printf "msg_main<<%s\n" "$DELIM"
-            head -c 3900 msg.txt
-            printf "\n%s\n" "$DELIM"
-          } >> "$GITHUB_OUTPUT"
-
-      # (OPZIONALE) Se non hai più file di stato da committare, puoi rimuovere del tutto questo step.
-      # Lo lascio commentato per chiarezza.
-      # - name: Persist screener state to repo
-      #   run: |
-      #     git config user.name  "github-actions[bot]"
-      #     git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-      #     git add -A state/last_all3.json state/index.json || true
-      #     git commit -m "chore(screener): update state [skip ci]" || echo "No changes to commit"
-      #     git push || echo "Nothing to push"
-
-      - name: Send Telegram — run_pipeline output
+      - name: Send Telegram — header
         if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
         shell: bash
         run: |
@@ -113,14 +95,51 @@ jobs:
           else
             HEADER="❌ Screener ERROR ($EXIT)"
           fi
-          TEXT="$(printf "%s\n\n%s" "$HEADER" "${{ steps.screener.outputs.msg_main }}")"
-          TRUNC="$(printf "%s" "$TEXT" | head -c 3900)"
           curl -sS -X POST "$API" \
             --data-urlencode "chat_id=${TG_CHAT_ID}" \
-            --data-urlencode "text=$TRUNC" \
+            --data-urlencode "text=$HEADER" \
             -d "disable_web_page_preview=true" \
             -d "parse_mode=HTML" \
-          || echo "Telegram send failed"
+          || echo "Telegram send failed (header)"
+
+      - name: Send Telegram — per-coin messages
+        if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
+        shell: bash
+        run: |
+          API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
+          shopt -s nullglob
+          FILES=(state/telegram/coin_*.html)
+          if [ ${#FILES[@]} -eq 0 ]; then
+            echo "No per-coin messages found."
+            exit 0
+          fi
+          for f in "${FILES[@]}"; do
+            TEXT="$(cat "$f")"
+            curl -sS -X POST "$API" \
+              --data-urlencode "chat_id=${TG_CHAT_ID}" \
+              --data-urlencode "text=$TEXT" \
+              -d "disable_web_page_preview=true" \
+              -d "parse_mode=HTML" \
+            || echo "Telegram send failed ($f)"
+            sleep 0.8
+          done
+
+      - name: Send Telegram — summary (ranking)
+        if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
+        shell: bash
+        run: |
+          API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
+          if [ -f state/telegram/msg_summary.html ]; then
+            TEXT="$(cat state/telegram/msg_summary.html)"
+          else
+            TEXT="⚠️ Nessun riepilogo generato."
+          fi
+          curl -sS -X POST "$API" \
+            --data-urlencode "chat_id=${TG_CHAT_ID}" \
+            --data-urlencode "text=$TEXT" \
+            -d "disable_web_page_preview=true" \
+            -d "parse_mode=HTML" \
+          || echo "Telegram send failed (summary)"
 
       - name: Upload logs (artifact)
         if: always()
@@ -131,3 +150,4 @@ jobs:
             out.txt
             err.txt
             msg.txt
+            state/telegram/*.html
