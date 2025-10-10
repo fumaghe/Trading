@@ -91,7 +91,7 @@ jobs:
           API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
           EXIT="${{ steps.screener.outputs.exit_code }}"
           if [ "$EXIT" = "0" ]; then
-            HEADER="✅ Screener OK"
+            HEADER="✅ Manipulation Screener OK"
           else
             HEADER="❌ Screener ERROR ($EXIT)"
           fi
