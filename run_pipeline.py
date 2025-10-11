@@ -421,8 +421,20 @@ def main():
     n = len(coins)
     log(f"==> Trovate {n} coin in TOP. Inizio analisi per-pool...")
 
+    # [ADD] Esporta lista TOP per il volume watcher
+    try:
+        from pathlib import Path
+        import json
+        Path("state").mkdir(parents=True, exist_ok=True)
+        top_pairs = [{"symbol": x["symbol"], "name": x["name"], "pair": x["pair"]} for x in coins]
+        Path("state/top_pairs.json").write_text(json.dumps(top_pairs, ensure_ascii=False), encoding="utf-8")
+        log("Salvato state/top_pairs.json per volume_watch.")
+    except Exception as _e:
+        log("WARN: impossibile scrivere state/top_pairs.json")
+
     # Cache CG
     cg_list = None
+
     cg_cache = Path(".cache") / "cg_coins_list_include_platform.json"
 
     # Connessione web3 condivisa
