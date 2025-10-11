@@ -1,12 +1,17 @@
-name: Volume Watch (every 30m)
+name: Volume Watch (every 5m)
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # ogni 30 minuti (UTC)
+    - cron: "*/5 * * * *"   # ogni 5 minuti (UTC)
   workflow_dispatch: {}
 
 permissions:
   contents: write
+
+# Evita overlap se una run dura troppo
+concurrency:
+  group: volwatch
+  cancel-in-progress: true
 
 jobs:
   volwatch:
