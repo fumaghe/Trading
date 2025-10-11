@@ -336,7 +336,7 @@ def compute_targets(
     snapshot: PoolSnapshot,
     w3: Web3,
     pool,
-    factors: List[Decimal] = [Decimal('1.5'), Decimal('2.0'), Decimal('5.0')],
+    factors: List[Decimal] = [Decimal('1.5'), Decimal('2.0'), Decimal('3.0')],
 ):
     results = []
     # Current price (token1 per 1 token0)

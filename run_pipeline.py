@@ -10,6 +10,7 @@ import time
 from decimal import Decimal
 from pathlib import Path
 from html import escape as htmlesc
+from typing import Optional
 
 import requests
 
@@ -117,7 +118,8 @@ def fetch_ds_pair_info(pair: str):
     Ritorna info principali della pair da DexScreener, inclusi:
     - marketcap (o fdv)
     - dexId
-    - priceUsd (USD per 1 baseToken mostrato da DS)
+    - priceUsd  (USD per 1 baseToken)
+    - priceNative (BNB per 1 baseToken su BSC)
     - baseToken {address, symbol}
     - quoteToken {address, symbol}
     - url (link diretto alla pair su DexScreener)
@@ -133,19 +135,21 @@ def fetch_ds_pair_info(pair: str):
         base = p.get("baseToken") or {}
         quote = p.get("quoteToken") or {}
         priceUsd = p.get("priceUsd")
+        priceNative = p.get("priceNative")
         url_ds = p.get("url")
 
         return {
             "marketcap": float(mc) if mc is not None else None,
             "dexId": p.get("dexId"),
-            "priceUsd": float(priceUsd) if priceUsd is not None else None,  # USD per 1 baseToken
+            "priceUsd": float(priceUsd) if priceUsd is not None else None,          # USD per base
+            "priceNative": float(priceNative) if priceNative is not None else None, # BNB per base (su BSC)
             "baseToken": {"address": (base.get("address") or "").lower(), "symbol": base.get("symbol")},
             "quoteToken": {"address": (quote.get("address") or "").lower(), "symbol": quote.get("symbol")},
             "url": url_ds,
         }
     except Exception:
         return {
-            "marketcap": None, "dexId": None, "priceUsd": None,
+            "marketcap": None, "dexId": None, "priceUsd": None, "priceNative": None,
             "baseToken": {}, "quoteToken": {}, "url": None
         }
 
@@ -165,6 +169,55 @@ def fetch_ds_token_price_usd_for_pair(token_addr: str, pair_addr: str):
     except Exception:
         pass
     return None
+
+def fetch_bnb_usd_from_ds(prefer_chain: str = "bsc") -> Optional[float]:
+    """
+    Ricava USD/BNB usando solo DexScreener.
+    Strategia robusta:
+      1) Cerca pair dove WBNB è *baseToken* sulla chain preferita e usa direttamente `priceUsd`.
+         Se più pair, sceglie quella con maggiore `liquidity.usd`.
+      2) In assenza di (1), fallback a priceUsd/priceNative se disponibili.
+    """
+    try:
+        WBNB_ADDR = "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"
+        url = DEX_TOKEN_URL.format(address=WBNB_ADDR)
+        r = requests.get(url, headers=HEADERS, timeout=HTTP_TIMEOUT)
+        r.raise_for_status()
+        j = r.json()
+        best = None  # (liq_usd, usd_per_bnb)
+
+        for p in j.get("pairs", []) or []:
+            if (p.get("chainId") or "").lower() != prefer_chain:
+                continue
+            liq = float(((p.get("liquidity") or {}).get("usd") or 0))
+            price_usd = p.get("priceUsd")
+            base = p.get("baseToken") or {}
+            quote = p.get("quoteToken") or {}
+            base_addr = (base.get("address") or "").lower()
+            quote_addr = (quote.get("address") or "").lower()
+
+            # Caso forte: WBNB è baseToken -> priceUsd è già USD/WBNB
+            if base_addr == WBNB_ADDR and price_usd is not None:
+                usd_per_bnb = float(price_usd)
+                if usd_per_bnb > 0:
+                    if best is None or liq > best[0]:
+                        best = (liq, usd_per_bnb)
+                continue
+
+            # Fallback: se ho priceNative, uso priceUsd/priceNative
+            price_nat = p.get("priceNative")
+            if price_usd is not None and price_nat not in (None, 0, "0"):
+                try:
+                    usd_per_bnb = float(price_usd) / float(price_nat)
+                    if usd_per_bnb > 0:
+                        if best is None or liq > best[0]:
+                            best = (liq, usd_per_bnb)
+                except Exception:
+                    pass
+
+        return best[1] if best else None
+    except Exception:
+        return None
 
 def load_cg_list_cached(cache_path: Path):
     cache_path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,7 +345,6 @@ def compute_push_amounts_with_defi(pool: str, rpc_url: str, w3=None):
         "plus50_token1": parse_amount_token1(rows[0]),
         "plus100_token1": parse_amount_token1(rows[1]),
         "plus200_token1": parse_amount_token1(rows[2]),
-        # mantieni anche le stringhe originali se vuoi loggarle
         "plus50_str": rows[0]["token1_needed"],
         "plus100_str": rows[1]["token1_needed"],
         "plus200_str": rows[2]["token1_needed"],
@@ -389,6 +441,9 @@ def main():
     tel_dir = Path("state/telegram")
     tel_dir.mkdir(parents=True, exist_ok=True)
 
+    # Prefetch globale USD/BNB (riusato come ultima spiaggia)
+    bnb_usd_global = fetch_bnb_usd_from_ds(prefer_chain="bsc")
+
     for idx, c in enumerate(coins, start=1):
         symbol = c["symbol"]
         name = c["name"]
@@ -473,8 +528,14 @@ def main():
             log_step(idx, n, symbol, pair, f"DeFi risultato: {plus50_disp}")
             continue
 
-        # 4) Conversione ≈ USDT: calcolo USD per 1 token1 (U1) coerente con P0 e con la stessa pair
-        U1 = None  # USD/token1
+        # --- Variabili token per fallback esterno ---
+        t0_addr = (push["token0_address"] or "").lower()
+        t1_addr = (push["token1_address"] or "").lower()
+        t0_sym  = (push["token0_symbol"] or "").upper().strip()
+        t1_sym  = (push["token1_symbol"] or "").upper().strip()
+
+        # 4) Conversione ≈ USDT (U1 = USD/token1)
+        U1 = None
 
         STABLE_SYMS = {"USDT", "USDC", "BUSD", "FDUSD", "DAI", "USDD", "USDP", "TUSD", "USD1"}
         STABLE_ADDRS_BSC = {
@@ -488,34 +549,103 @@ def main():
             "0xbd0a4bf098261673d5e6e600fd87ddcd756efb62",  # USD1
         }
 
-        try:
-            P0_dec = push["P0"]
-            base_addr = ((ds.get("baseToken") or {}).get("address") or "").lower()
-            priceUsd = ds.get("priceUsd")
+        NATIVE_WRAPPED_SYMS_BSC = {"WBNB"}
+        NATIVE_WRAPPED_ADDRS_BSC = {"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"}  # WBNB
 
-            # Stable override
-            if (push["token1_symbol"] in STABLE_SYMS) or (push["token1_address"] in STABLE_ADDRS_BSC):
+        try:
+            P0_dec = push["P0"]  # Decimal: token1 per 1 token0
+            priceUsd = ds.get("priceUsd")            # USD per baseToken
+            priceNative = ds.get("priceNative")      # BNB per baseToken (su BSC)
+
+            base_info  = ds.get("baseToken")  or {}
+            quote_info = ds.get("quoteToken") or {}
+
+            base_addr  = (base_info.get("address") or "").lower()
+            quote_addr = (quote_info.get("address") or "").lower()
+            base_sym   = (base_info.get("symbol")  or "").upper().strip()
+            quote_sym  = (quote_info.get("symbol") or "").upper().strip()
+
+            # Stable override (token1 è una stable)
+            if (t1_sym in STABLE_SYMS) or (t1_addr in STABLE_ADDRS_BSC):
                 U1 = Decimal("1")
 
-            if U1 is None:
-                if priceUsd is not None and base_addr == push["token0_address"]:
-                    U1 = Decimal(str(priceUsd)) / P0_dec
-                elif priceUsd is not None and base_addr == push["token1_address"]:
-                    U1 = Decimal(str(priceUsd))
-                else:
-                    alt = fetch_ds_token_price_usd_for_pair(push["token1_address"], pair)
-                    if alt is not None:
-                        U1 = Decimal(str(alt))
+            # 1) Match per address su base/quote quando priceUsd è presente
+            if U1 is None and priceUsd is not None:
+                base_is_t0  = bool(base_addr)  and (base_addr  == t0_addr)
+                base_is_t1  = bool(base_addr)  and (base_addr  == t1_addr)
+                quote_is_t0 = bool(quote_addr) and (quote_addr == t0_addr)
+                quote_is_t1 = bool(quote_addr) and (quote_addr == t1_addr)
 
+                if base_is_t1 or quote_is_t0:
+                    U1 = Decimal(str(priceUsd))
+                elif (base_is_t0 or quote_is_t1) and P0_dec is not None and P0_dec != 0:
+                    U1 = Decimal(str(priceUsd)) / P0_dec
+
+            # 1-bis) Fallback nativo per BSC: se token1 è WBNB e ho priceNative => U1 = priceUsd / priceNative
+            if (
+                U1 is None and priceUsd is not None and priceNative is not None and
+                (t1_sym in NATIVE_WRAPPED_SYMS_BSC or t1_addr in NATIVE_WRAPPED_ADDRS_BSC)
+            ):
+                denom = Decimal(str(priceNative))
+                if denom != 0:
+                    U1 = Decimal(str(priceUsd)) / denom
+
+            # 2) Fallback per symbol
+            if U1 is None and priceUsd is not None:
+                base_is_t0_sym  = base_sym  and (base_sym  == t0_sym)
+                base_is_t1_sym  = base_sym  and (base_sym  == t1_sym)
+                quote_is_t0_sym = quote_sym and (quote_sym == t0_sym)
+                quote_is_t1_sym = quote_sym and (quote_sym == t1_sym)
+
+                if base_is_t1_sym or quote_is_t0_sym:
+                    U1 = Decimal(str(priceUsd))
+                elif (base_is_t0_sym or quote_is_t1_sym) and P0_dec is not None and P0_dec != 0:
+                    U1 = Decimal(str(priceUsd)) / P0_dec
+
+            # 3) Fallback extra: preleva USD/token1 dalla stessa pair
+            if U1 is None:
+                alt_t1 = fetch_ds_token_price_usd_for_pair(t1_addr, pair)
+                if alt_t1 is not None:
+                    U1 = Decimal(str(alt_t1))
+
+            # 4) Ultimo fallback: USD/token0 dalla stessa pair => U1 = USD(token0) / P0
+            if U1 is None:
+                alt_t0 = fetch_ds_token_price_usd_for_pair(t0_addr, pair)
+                if alt_t0 is not None and P0_dec is not None and P0_dec != 0:
+                    U1 = Decimal(str(alt_t0)) / P0_dec
+
+            # 5) Fallback globale per WBNB (prima chance dentro il try)
+            if U1 is None and (t1_sym in NATIVE_WRAPPED_SYMS_BSC or t1_addr in NATIVE_WRAPPED_ADDRS_BSC):
+                bnb_usd = fetch_bnb_usd_from_ds(prefer_chain="bsc")
+                if bnb_usd is not None and bnb_usd > 0:
+                    U1 = Decimal(str(bnb_usd))
+                if args.per_pool_debug:
+                    log_step(idx, n, symbol, pair, f"DEBUG global WBNB fallback: USD/BNB={bnb_usd} -> U1={U1}")
+
+            # Sanity check
             if U1 is not None and (U1 <= 0 or U1 < Decimal("1e-9")):
                 U1 = None
 
             if args.per_pool_debug:
-                log_step(idx, n, symbol, pair, f"DEBUG price: token1={push['token1_symbol']} U1={U1} | baseAddr={base_addr} priceUsd={priceUsd} P0={P0_dec}")
+                log_step(
+                    idx, n, symbol, pair,
+                    f"DEBUG price-map: base={base_sym}:{base_addr} quote={quote_sym}:{quote_addr} "
+                    f"| t0={t0_sym}:{t0_addr} t1={t1_sym}:{t1_addr} "
+                    f"| priceUsd={priceUsd} priceNative={priceNative} P0={P0_dec} => U1={U1}"
+                )
         except Exception as e:
             if args.per_pool_debug:
                 log_err(idx, n, symbol, pair, f"Conversione USD fallback ERR: {e}")
             U1 = None
+
+        # ---- Seconda chance *fuori* dal try: se token1=WBNB e U1 ancora None, usa prefetch globale ----
+        if U1 is None and (t1_sym in {"WBNB"} or t1_addr in {"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"}):
+            if bnb_usd_global is None:
+                bnb_usd_global = fetch_bnb_usd_from_ds(prefer_chain="bsc")
+            if bnb_usd_global is not None and bnb_usd_global > 0:
+                U1 = Decimal(str(bnb_usd_global))
+                if args.per_pool_debug:
+                    log_step(idx, n, symbol, pair, f"DEBUG second-chance WBNB global: USD/BNB={bnb_usd_global} -> U1={U1}")
 
         # Helpers formattazione
         def decfmt(d: Decimal, decimals: int = 6) -> str:
