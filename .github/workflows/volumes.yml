@@ -1,8 +1,63 @@
-      - name: Send Telegram — volume watch (chunked)
-        if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
+name: Volume Watch (every 30m)
+
+on:
+  schedule:
+    - cron: "*/30 * * * *"   # ogni 30 minuti (UTC)
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  volwatch:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONIOENCODING: "utf-8"
+      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+      TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install deps
         run: |
-          if [ ! -f state/telegram/msg_volwatch.html ]; then
-            echo "No volume watch message generated."
-            exit 0
+          python -m pip install --upgrade pip
+          pip install requests
+
+      - name: Run volume_watch.py (auto-send to Telegram, chunked)
+        run: |
+          python volume_watch.py \
+            --mode from-screener \
+            --min-liq 200000 \
+            --workers 12 \
+            --max-tickers-scan 40 \
+            --dominance 0.30 \
+            --rps-cg 0.5 \
+            --rps-ds 2.0 \
+            --funnel-show 100 \
+            --skip-unchanged-days 0 \
+            --send-telegram \
+            --max-chars 3800 \
+            --tg-sleep 0.8
+
+      - name: Commit state (volwatch)
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add state/volwatch/*.json state/telegram/msg_volwatch.html || true
+          if ! git diff --cached --quiet; then
+            git commit -m "volwatch: update $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+            git push
+          else
+            echo "No state changes to commit."
           fi
-          python scripts/tg_send_chunks.py --file state/telegram/msg_volwatch.html

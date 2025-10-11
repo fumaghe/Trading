@@ -10,7 +10,7 @@ Volume Watch — ogni 30 minuti
   • Pool address con link DexScreener + address in <code>
   • Token BASE e QUOTE con link BscScan, address short
   • Vol1h, ~Vol30m (≈ h1/2), Δ% con freccia
-Output: state/telegram/msg_volwatch.html
+Output: state/telegram/msg_volwatch.html  (e invio Telegram opzionale)
 Stato per pair: state/volwatch/{pair}.json
 """
 
@@ -40,6 +40,10 @@ DEX_PAIRS_URL = "https://api.dexscreener.com/latest/dex/pairs/bsc/{pair}"
 TOP_HEADER = "— Tutti e 3 i parametri (TOP) —"
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
+SCRIPT_DIR = Path(__file__).resolve().parent  # per path robusti
+
+# ---------- Utils ---------- #
+
 def ensure_dir(p: str):
     Path(p).mkdir(parents=True, exist_ok=True)
 
@@ -58,14 +62,75 @@ def short_addr(addr: Optional[str]) -> str:
 def now_iso_local() -> str:
     return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
 
+# --- Telegram helpers (chunked) ---
+
+def chunk_by_blocks(text: str, max_chars: int = 3800, split_marker: str = "\n\n• ") -> list[str]:
+    """Divide il messaggio in chunk <= max_chars cercando di spezzare tra i blocchi per-coin (prefisso '• ')."""
+    if split_marker in text:
+        head, rest = text.split(split_marker, 1)
+        blocks = [head] + [split_marker.strip() + b for b in rest.split(split_marker)]
+    else:
+        blocks = [text]
+    parts, buf = [], ""
+    for blk in blocks:
+        if not blk:
+            continue
+        if len(blk) > max_chars:  # taglio di sicurezza se un blocco è enorme
+            if buf:
+                parts.append(buf)
+                buf = ""
+            for i in range(0, len(blk), max_chars):
+                parts.append(blk[i:i+max_chars])
+            continue
+        if len(buf) + len(blk) + 2 > max_chars:
+            if buf:
+                parts.append(buf)
+            buf = blk
+        else:
+            buf = (buf + "\n\n" + blk) if buf else blk
+    if buf:
+        parts.append(buf)
+    return parts
+
+def send_telegram_chunked(html_text: str,
+                          token: str,
+                          chat_id: str,
+                          max_chars: int = 3800,
+                          sleep_s: float = 0.8,
+                          parse_mode: str = "HTML") -> bool:
+    api = f"https://api.telegram.org/bot{token}/sendMessage"
+    parts = chunk_by_blocks(html_text, max_chars=max_chars, split_marker="\n\n• ")
+    ok_all = True
+    for i, p in enumerate(parts, 1):
+        r = requests.post(api, data={
+            "chat_id": chat_id,
+            "text": p,
+            "parse_mode": parse_mode,
+            "disable_web_page_preview": True,
+        })
+        try:
+            r.raise_for_status()
+            ok = bool((r.json() or {}).get("ok"))
+        except Exception:
+            ok = False
+        if not ok:
+            ok_all = False
+            try:
+                print(f"[Send fail part {i}] {r.text}", file=sys.stderr)
+            except Exception:
+                print(f"[Send fail part {i}] HTTP {r.status_code}", file=sys.stderr)
+        time.sleep(sleep_s)
+    return ok_all
+
 # ---------- Screener bridge (opzionale) ---------- #
 
 def run_test4_and_capture(python_bin: str, min_liq: int, workers: int,
                           dominance: float, max_tickers_scan: int,
                           rps_cg: float, rps_ds: float, funnel_show: int,
                           skip_unchanged_days: int) -> str:
+    test4_path = SCRIPT_DIR / "test4.py"
     cmd = [
-        python_bin, "test4.py",
+        python_bin, str(test4_path),
         "--seed-from", "perps",
         "--workers", str(workers),
         "--min-liq", str(min_liq),
@@ -244,12 +309,20 @@ def main():
     ap.add_argument("--rps-ds", type=float, default=2.0)
     ap.add_argument("--funnel-show", type=int, default=100)
     ap.add_argument("--skip-unchanged-days", type=int, default=0)
+    # Invio Telegram
+    ap.add_argument("--send-telegram", action="store_true", help="Se presente, invia il messaggio a Telegram in chunk")
+    ap.add_argument("--max-chars", type=int, default=3800, help="Max caratteri per chunk Telegram")
+    ap.add_argument("--tg-sleep", type=float, default=0.8, help="Pausa tra i chunk Telegram")
+    ap.add_argument("--tg-parse-mode", default="HTML",
+                    choices=["HTML", "MarkdownV2", "Markdown"], help="Parse mode Telegram")
+    ap.add_argument("--tg-token", default=None, help="Override TG_BOT_TOKEN (altrimenti legge da env)")
+    ap.add_argument("--tg-chat", default=None, help="Override TG_CHAT_ID (altrimenti legge da env)")
     args = ap.parse_args()
 
     # 1) Carica lista pair
     if args.mode == "from-file":
         try:
-            pairs_path = Path(args.pairs_file)  # FIX Pylance
+            pairs_path = Path(args.pairs_file)
             data = json.loads(pairs_path.read_text(encoding="utf-8"))
         except Exception:
             data = []
@@ -328,8 +401,22 @@ def main():
     # 3) Costruisci messaggio HTML e salva
     ensure_dir("state/telegram")
     html = build_message(rows)
-    Path("state/telegram/msg_volwatch.html").write_text(html, encoding="utf-8")
-    print("OK: scritto state/telegram/msg_volwatch.html")
+    out_path = Path("state/telegram/msg_volwatch.html")
+    out_path.write_text(html, encoding="utf-8")
+    print(f"OK: scritto {out_path} ({len(html)} chars)")
+
+    # 4) Invio Telegram (opzionale)
+    if args.send_telegram:
+        token = args.tg_token or os.environ.get("TG_BOT_TOKEN", "")
+        chat  = args.tg_chat  or os.environ.get("TG_CHAT_ID", "")
+        if not token or not chat:
+            print("Telegram disabled: TG_BOT_TOKEN/TG_CHAT_ID mancanti.", file=sys.stderr)
+        else:
+            ok = send_telegram_chunked(html, token, chat,
+                                       max_chars=args.max_chars,
+                                       sleep_s=args.tg_sleep,
+                                       parse_mode=args.tg_parse_mode)
+            print(f"Telegram send: {'OK' if ok else 'PARTIAL/FAIL'}")
 
 if __name__ == "__main__":
     main()
