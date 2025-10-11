@@ -8,6 +8,7 @@ on:
 permissions:
   contents: write
 
+
 jobs:
   volwatch:
     runs-on: ubuntu-latest
@@ -53,64 +54,4 @@ jobs:
           if [ ! -f "$FILE" ]; then
             echo "⚠️ Nessun messaggio di volume watch generato."
             exit 0
-          fi
-
-          python - <<'PY'
-import os, time, requests
-
-TOKEN = os.environ["TG_BOT_TOKEN"]
-CHAT  = os.environ["TG_CHAT_ID"]
-API   = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
-
-path = "state/telegram/msg_volwatch.html"
-with open(path, encoding="utf-8") as f:
-    text = f.read()
-
-MAX = 3800  # margine sotto 4096
-parts = []
-
-# Spezza per blocchi: header + tabellone + blocchi per-coin (prefisso "• ")
-sep = "\n\n• "
-if sep in text:
-    head, rest = text.split(sep, 1)
-    blocks = [head] + ["• " + b for b in rest.split("\n\n• ")]
-else:
-    blocks = [text]
-
-buf = ""
-for blk in blocks:
-    if len(buf) + len(blk) + 2 > MAX:
-        if buf:
-            parts.append(buf)
-        buf = blk
-    else:
-        buf = (buf + "\n\n" + blk) if buf else blk
-if buf:
-    parts.append(buf)
-
-for i, p in enumerate(parts, 1):
-    r = requests.post(API, data={
-        "chat_id": CHAT,
-        "text": p,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": True
-    })
-    try:
-        r.raise_for_status()
-    except Exception:
-        print(f"[Send fail part {i}] {r.text}")
-    time.sleep(0.8)
-PY
-
-      - name: Commit state (volwatch)
-        shell: bash
-        run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add state/volwatch/*.json state/telegram/msg_volwatch.html || true
-          if ! git diff --cached --quiet; then
-            git commit -m "volwatch: update $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            git push
-          else
-            echo "No state changes to commit."
           fi
