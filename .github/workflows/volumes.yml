@@ -44,22 +44,63 @@ jobs:
       #   run: |
       #     python volume_watch.py --mode from-file --pairs-file state/top_pairs.json
 
-      - name: Send Telegram — volume watch
+      - name: Send Telegram — volume watch (chunked)
         if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
         shell: bash
         run: |
-          API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
-          if [ -f state/telegram/msg_volwatch.html ]; then
-            TEXT="$(cat state/telegram/msg_volwatch.html)"
-          else
-            TEXT="⚠️ Nessun messaggio di volume watch generato."
+          set -e
+          FILE="state/telegram/msg_volwatch.html"
+          if [ ! -f "$FILE" ]; then
+            echo "⚠️ Nessun messaggio di volume watch generato."
+            exit 0
           fi
-          curl -sS -X POST "$API" \
-            --data-urlencode "chat_id=${TG_CHAT_ID}" \
-            --data-urlencode "text=$TEXT" \
-            -d "disable_web_page_preview=true" \
-            -d "parse_mode=HTML" \
-          || echo "Telegram send failed (volwatch)"
+
+          python - <<'PY'
+import os, time, requests
+
+TOKEN = os.environ["TG_BOT_TOKEN"]
+CHAT  = os.environ["TG_CHAT_ID"]
+API   = f"https://api.telegram.org/bot{TOKEN}/sendMessage"
+
+path = "state/telegram/msg_volwatch.html"
+with open(path, encoding="utf-8") as f:
+    text = f.read()
+
+MAX = 3800  # margine sotto 4096
+parts = []
+
+# Spezza per blocchi: header + tabellone + blocchi per-coin (prefisso "• ")
+sep = "\n\n• "
+if sep in text:
+    head, rest = text.split(sep, 1)
+    blocks = [head] + ["• " + b for b in rest.split("\n\n• ")]
+else:
+    blocks = [text]
+
+buf = ""
+for blk in blocks:
+    if len(buf) + len(blk) + 2 > MAX:
+        if buf:
+            parts.append(buf)
+        buf = blk
+    else:
+        buf = (buf + "\n\n" + blk) if buf else blk
+if buf:
+    parts.append(buf)
+
+for i, p in enumerate(parts, 1):
+    r = requests.post(API, data={
+        "chat_id": CHAT,
+        "text": p,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    })
+    try:
+        r.raise_for_status()
+    except Exception:
+        print(f"[Send fail part {i}] {r.text}")
+    time.sleep(0.8)
+PY
 
       - name: Commit state (volwatch)
         shell: bash
