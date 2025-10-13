@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-
 """
-Volume Watch — run consigliato ogni 5 minuti
-- Calcola Vol(30m) esatto sommando i campioni DexScreener `volume.m5` persistiti su disco.
-- Calcola Δ tra ultimi 30' e 30' precedenti (in $ e %), con emoji su/giu.
-- Fallback: se `m5` non è disponibile/insufficiente, mostra ~Vol30m ≈ h1/2 e Δ n.d.
-- Output HTML: state/telegram/msg_volwatch.html (invio Telegram opzionale)
-- Stato per pair: state/volwatch/{pair}.json  (mantiene una history di campioni m5 ~75')
+Crypto Screener (v2.3.2) — Output TOP-only con Pool address
+
+Differenze principali vs v2.3.1:
+- Stampa ESCLUSIVAMENTE la sezione:
+    — Tutti e 3 i parametri (TOP) —
+  con righe nel formato:
+    SYMBOL · Name · LP: 1.234.567$ · Pool: 0xABCDEF...
+  (nessun troncamento dell'indirizzo).
+- Output "quiet" forzato: nessun altro log, tabella o barra di progresso.
+- Nessun "Telegram report" o "funnel": solo la lista TOP.
+
+Criteri invariati:
+  1) CEX spot principale per volume = Bitget (tickers CoinGecko)
+  2) Perpetual su ENTRAMBI: Binance Futures (USDT-M) e Bybit (linear)
+  3) Contratto su BSC e main LP (maggiore liquidità) su PancakeSwap
+     (opzione --require-v3 per limitare solo a Pancake v3)
+
+python test4.py --seed-from perps --workers 12 --min-liq 200000 --max-tickers-scan 40 --dominance 0.30 --skip-unchanged-days 0 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100
 """
 
 from __future__ import annotations
@@ -15,493 +26,714 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 import time
-from datetime import datetime, timezone
+import threading
+import random
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Dict, List, Optional, Tuple, Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
-from html import escape as htmlesc
 
-UA = (
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-    "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
-)
-HEADERS = {"Accept": "application/json", "User-Agent": UA}
-HTTP_TIMEOUT = 30
+try:
+    from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
+except Exception:  # pragma: no cover
+    def retry(*args, **kwargs):
+        def deco(fn): return fn
+        return deco
+    def stop_after_attempt(n): return None
+    def wait_exponential(**kwargs): return None
+    def retry_if_exception_type(*args, **kwargs): return None
 
-# Chain fissa BSC come nello script originale
-DEX_PAIRS_URL = "https://api.dexscreener.com/latest/dex/pairs/bsc/{pair}"
-TOP_HEADER = "— Tutti e 3 i parametri (TOP) —"
-ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+try:
+    from rich.console import Console
+    from rich.table import Table
+    from rich.progress import Progress, BarColumn, TimeElapsedColumn
+    from rich.panel import Panel
+    from rich.rule import Rule
+    from rich import box
+    RICH = True
+    console = Console()
+except Exception:
+    RICH = False
+    console = None
 
-SCRIPT_DIR = Path(__file__).resolve().parent
+# --------------------------- Endpoints --------------------------- #
 
-# Finestra e retention per il buffer m5
-WIN_30M_SEC = 30 * 60
-RETENTION_SEC = 75 * 60  # ~1h15 per sicurezza
+COINGECKO = "https://api.coingecko.com/api/v3"
+DEXSCREENER_TOKEN = "https://api.dexscreener.com/latest/dex/tokens/{address}"
+BINANCE_FUTURES_INFO = "https://fapi.binance.com/fapi/v1/exchangeInfo"
+BYBIT_LINEAR = "https://api.bybit.com/v5/market/instruments-info"
 
-# ---------- Utils ---------- #
+# --------------------------- Defaults --------------------------- #
+
+DEFAULT_HEADERS = {
+    "Accept": "application/json, text/plain, */*",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
+    ),
+}
+
+# --------------------------- Rate limiter --------------------------- #
+
+class RateLimiter:
+    """Semplice rate limiter per-sorgente con piccolo jitter per ridurre burst/429."""
+    def __init__(self, rps: float):
+        self.min_interval = 1.0 / max(0.0001, rps)
+        self.lock = threading.Lock()
+        self.last = 0.0
+
+    def wait(self):
+        with self.lock:
+            now = time.time()
+            delta = now - self.last
+            if delta < self.min_interval:
+                time.sleep(self.min_interval - delta)
+            self.last = time.time()
+        time.sleep(random.uniform(0.05, 0.20))  # desincronizza leggermente
+
+# --------------------------- Settings --------------------------- #
+
+@dataclass
+class Settings:
+    pages: int = 1
+    per_page: int = 250
+    ids: Optional[List[str]] = None
+    workers: int = 6
+
+    # Stage thresholds
+    min_pair_liquidity_usd: float = 150_000.0
+    require_v3: bool = False  # opzionale: solo Pancake v3
+
+    # Heuristica Bitget
+    max_tickers_scan: int = 15
+    bitget_dominance: float = 0.60  # 0..1
+
+    # TTLs
+    ttl_cg_coin_sec: int = 48 * 3600
+    ttl_perps_sec: int = 7 * 24 * 3600
+    ttl_dexscreener_sec: int = 24 * 3600
+
+    # Skip coins stabili per N giorni
+    skip_unchanged_days: int = 3
+
+    # Paths
+    cache_root: str = ".cache"
+    state_root: str = "state"
+
+    # Verbose & safety
+    verbose: bool = True
+    quiet: bool = False
+
+    # Rate limits (rps)
+    rps_cg: float = 1.0      # CoinGecko
+    rps_ds: float = 2.0      # DexScreener
+
+    # Funnel printing
+    funnel_show: int = 30
+
+    # Seed mode: "perps" (default) o "cg"
+    seed_from: str = "perps"
+
+# --------------------------- Utilities & logging --------------------------- #
+
+def now_ts() -> int:
+    return int(time.time())
 
 def ensure_dir(p: str):
     Path(p).mkdir(parents=True, exist_ok=True)
 
-def format_usd_int(x: Any) -> str:
-    try:
-        return f"{int(round(float(x))):,}$".replace(",", ".")
-    except Exception:
-        return "n.d."
+def joinp(*a) -> str:
+    return os.path.join(*a)
 
-def format_usd_signed(x: Optional[float]) -> str:
-    if x is None:
-        return "n.d."
-    sign = "+" if x > 0 else ""
-    return f"{sign}{format_usd_int(x)}"
-
-def format_pct_signed(x: Optional[float]) -> str:
-    if x is None:
-        return "n.d."
-    sign = "+" if x > 0 else ""
-    try:
-        return f"{sign}{float(x):.2f}%"
-    except Exception:
-        return "n.d."
-
-def short_addr(addr: Optional[str]) -> str:
-    a = (addr or "").lower()
-    if not a.startswith("0x") or len(a) < 10:
-        return a or "n.a."
-    return f"{a[:6]}…{a[-4:]}"
-
-def now_iso_local() -> str:
-    return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
-
-# --- Telegram helpers (chunked) ---
-
-def chunk_by_blocks(text: str, max_chars: int = 3800, split_marker: str = "\n\n• ") -> list[str]:
-    if split_marker in text:
-        head, rest = text.split(split_marker, 1)
-        blocks = [head] + [split_marker.strip() + b for b in rest.split(split_marker)]
+def log_info(msg: str):
+    if settings.quiet:
+        return
+    if RICH and console:
+        console.log(msg)
     else:
-        blocks = [text]
-    parts, buf = [], ""
-    for blk in blocks:
-        if not blk:
+        print(msg)
+
+def read_json(path: str) -> Optional[dict]:
+    p = Path(path)
+    if not p.exists(): return None
+    try:
+        with p.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+def write_json(path: str, data: dict):
+    ensure_dir(os.path.dirname(path))
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+
+def cache_get(path: str, ttl_sec: int) -> Optional[dict]:
+    p = Path(path)
+    if not p.exists(): return None
+    try:
+        age = time.time() - p.stat().st_mtime
+        if age > ttl_sec: return None
+        with p.open("r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception:
+        return None
+
+# --------------------------- HTTP --------------------------- #
+
+class Http:
+    sess = requests.Session()
+    sess.headers.update(DEFAULT_HEADERS)
+
+    @staticmethod
+    @retry(stop=stop_after_attempt(4), wait=wait_exponential(multiplier=1, min=1, max=8),
+           retry=retry_if_exception_type((requests.RequestException,)))
+    def get(url: str, **kwargs) -> requests.Response:
+        headers = kwargs.pop("headers", {})
+        all_headers = {**DEFAULT_HEADERS, **headers}
+        r = Http.sess.get(url, timeout=25, headers=all_headers, **kwargs)
+        if r.status_code in (429, 418):
+            wait_s = int(r.headers.get("Retry-After", "5"))
+            time.sleep(max(wait_s, 5))
+            raise requests.RequestException(f"{r.status_code} Too Many Requests")
+        if r.status_code in (403, 401):
+            time.sleep(5)
+            raise requests.RequestException(f"{r.status_code} Forbidden/Unauthorized")
+        if r.status_code >= 400:
+            raise requests.RequestException(f"GET {url} -> {r.status_code} {r.text[:200]}")
+        return r
+
+# --------------------------- Providers: Perps --------------------------- #
+
+def load_binance_perp_bases_cached() -> Dict[str, Any]:
+    cache_path = joinp(settings.cache_root, "perps_binance.json")
+    j = cache_get(cache_path, settings.ttl_perps_sec)
+    if j is not None:
+        return j
+    data = Http.get(BINANCE_FUTURES_INFO).json()
+    res = {}
+    for s in data.get("symbols", []):
+        if s.get("contractType") == "PERPETUAL" and s.get("status") == "TRADING":
+            res[s["baseAsset"].upper()] = s
+    write_json(cache_path, res)
+    return res
+
+def load_bybit_perp_bases_cached() -> Dict[str, Any]:
+    cache_path = joinp(settings.cache_root, "perps_bybit.json")
+    j = cache_get(cache_path, settings.ttl_perps_sec)
+    if j is not None:
+        return j
+    res: Dict[str, Any] = {}
+    cursor = None
+    while True:
+        params = {"category": "linear", "limit": 1000}
+        if cursor: params["cursor"] = cursor
+        data = Http.get(BYBIT_LINEAR, params=params).json()
+        lst = (data.get("result") or {}).get("list") or []
+        for s in lst:
+            if s.get("status") == "Trading" and s.get("contractType") in ("LinearPerpetual", "LinearFutures"):
+                symbol = s.get("symbol", "")
+                base = re.sub(r"(USDT|USDC)$", "", symbol).upper()
+                if base: res[base] = s
+        cursor = (data.get("result") or {}).get("nextPageCursor")
+        if not cursor: break
+    write_json(cache_path, res)
+    return res
+
+def base_symbol_candidates(base: str) -> List[str]:
+    base = base.upper()
+    cands = {base}
+    for k in ("10", "100", "1000", "10000"):
+        cands.add(f"{k}{base}")
+    m = re.match(r"^(10|100|1000|10000)([A-Z0-9]+)$", base)
+    if m: cands.add(m.group(2))
+    return list(cands)
+
+def has_perps_on_both(binance_bases: Dict[str, Any], bybit_bases: Dict[str, Any], symbol: str) -> bool:
+    cands = base_symbol_candidates(symbol)
+    return any(c in binance_bases for c in cands) and any(c in bybit_bases for c in cands)
+
+# --------------------------- CoinGecko --------------------------- #
+
+def cg_coin_cache_path(cid: str) -> str:
+    return joinp(settings.cache_root, "coingecko", f"{cid}.json")
+
+def fetch_coin_full(cid: str, cg_rl: RateLimiter) -> Dict[str, Any]:
+    cache_path = cg_coin_cache_path(cid)
+    j = cache_get(cache_path, settings.ttl_cg_coin_sec)
+    if j is not None: return j
+    url = f"{COINGECKO}/coins/{cid}?localization=false&tickers=true&market_data=false&community_data=false&developer_data=false&sparkline=false"
+    cg_rl.wait()
+    data = Http.get(url).json()
+    write_json(cache_path, data)
+    return data
+
+def bsc_contract_address(coin: Dict[str, Any]) -> Optional[str]:
+    platforms = coin.get("platforms") or {}
+    for key in platforms.keys():
+        if key and key.lower() in ("binance-smart-chain", "bsc", "bnb-smart-chain", "bnb"):
+            addr = platforms[key]
+            if addr: return addr.lower()
+    return None
+
+def top_spot_cex_bitget_ok(coin: Dict[str, Any], dominance: float, max_scan: int) -> Tuple[bool, Optional[str]]:
+    """Ritorna (is_bitget_top, top_name) con short-circuit euristico + filtri qualità."""
+    tickers = coin.get("tickers", []) or []
+    best_name, best_vol = None, -1.0
+    seen = 0
+    sum_vol = 0.0
+    bitget_vol = 0.0
+    dex_like = {"uniswap", "pancakeswap", "sushiswap", "curve", "quickswap", "raydium", "balancer"}
+    for t in tickers:
+        if t.get("is_anomaly") or t.get("is_stale"):
             continue
-        if len(blk) > max_chars:
-            if buf:
-                parts.append(buf); buf = ""
-            for i in range(0, len(blk), max_chars):
-                parts.append(blk[i:i+max_chars])
+        trust = (t.get("trust_score") or "").lower()
+        if trust and trust not in ("green", "yellow"):
             continue
-        if len(buf) + len(blk) + 2 > max_chars:
-            if buf:
-                parts.append(buf)
-            buf = blk
+
+        market = (t.get("market") or {})
+        name = (market.get("name") or "").strip()
+        ident = (market.get("identifier") or "").lower()
+        if any(d in ident for d in dex_like):
+            continue
+
+        conv = t.get("converted_volume") or {}
+        vol = None
+        for k in ("usd", "eur", "btc"):
+            if conv.get(k) is not None:
+                vol = float(conv[k]); break
+        if vol is None: vol = 0.0
+        seen += 1
+        sum_vol += vol
+        if vol > best_vol:
+            best_vol, best_name = vol, name
+        if name.lower().startswith("bitget"):
+            bitget_vol += vol
+
+        if seen >= max_scan and sum_vol > 0:
+            if (bitget_vol / sum_vol) >= dominance:
+                return True, "Bitget"
+            break
+    return (best_name or "").lower().startswith("bitget"), best_name
+
+# /coins/list?include_platform=true  --> mappa SYMBOL -> id, preferendo chi ha BSC
+def load_cg_coins_list_cached(cg_rl: RateLimiter) -> List[Dict[str, Any]]:
+    cache_path = joinp(settings.cache_root, "coingecko", "coins_list_include_platform.json")
+    j = cache_get(cache_path, settings.ttl_cg_coin_sec)
+    if j is not None:
+        return j
+    url = f"{COINGECKO}/coins/list?include_platform=true"
+    cg_rl.wait()
+    data = Http.get(url).json()
+    write_json(cache_path, data)
+    return data
+
+def choose_best_cg_id_for_symbol(symbol: str, cg_list: List[Dict[str, Any]]) -> Optional[Tuple[str, str]]:
+    """
+    Ritorna (id, name) per il symbol dato.
+    Heuristica:
+      1) match case-insensitive su symbol; se più entry:
+         - preferisci quelle con 'binance-smart-chain' nei platforms
+         - altrimenti prendi la prima occorrenza
+    """
+    sym_up = symbol.upper()
+    candidates = []
+    for row in cg_list:
+        sym = (row.get("symbol") or "").upper()
+        if sym != sym_up:
+            continue
+        name = row.get("name") or ""
+        platforms = (row.get("platforms") or {})
+        has_bsc = any(k.lower() in ("binance-smart-chain", "bsc", "bnb", "bnb-smart-chain") for k in platforms.keys())
+        candidates.append((row.get("id"), name, has_bsc))
+    if not candidates:
+        return None
+    for cid, name, has_bsc in candidates:
+        if has_bsc:
+            return cid, name
+    cid, name, _ = candidates[0]
+    return cid, name
+
+# --------------------------- DexScreener --------------------------- #
+
+def ds_cache_path(addr: str) -> str:
+    return joinp(settings.cache_root, "dexscreener", f"{addr.lower()}.json")
+
+def main_bsc_pair_on_pancake(addr: str, ds_rl: RateLimiter) -> Optional[Dict[str, Any]]:
+    # NO CACHE: chiama sempre DexScreener e NON salva su disco
+    ds_rl.wait()
+    url = DEXSCREENER_TOKEN.format(address=addr)
+    data = Http.get(url).json()
+
+    pairs = data.get("pairs") or []
+    best, best_liq = None, -1.0
+    for p in pairs:
+        if (p.get("chainId") or "").lower() != "bsc":
+            continue
+        liq = float(((p.get("liquidity") or {}).get("usd") or 0))
+        if liq < settings.min_pair_liquidity_usd:
+            continue
+        if liq > best_liq:
+            best_liq, best = liq, p
+    if not best: return None
+    dexid = (best.get("dexId") or "").lower()
+    if "pancake" not in dexid:
+        return None
+    return best
+
+
+# --------------------------- State index --------------------------- #
+
+def state_path() -> str:
+    return joinp(settings.state_root, "index.json")
+
+def load_state() -> Dict[str, Any]:
+    return {}
+
+def save_state(state: Dict[str, Any]):
+    pass
+
+
+def stale_by_days(ts: Optional[int], days: int) -> bool:
+    # FIX: se days <= 0 allora NON skippiamo mai (sempre "stale" => rielabora)
+    if days <= 0:
+        return True
+    if not ts:
+        return True
+    return (now_ts() - ts) > days * 86400
+
+# --------------------------- Screening --------------------------- #
+
+@dataclass
+class CheckResult:
+    id: str
+    symbol: str
+    name: str
+    reasons_ok: List[str]
+    reasons_ko: List[str]
+    extra: Dict[str, Any]
+    def ok(self) -> bool: return len(self.reasons_ko) == 0
+    def score(self) -> int: return len(self.reasons_ok)
+
+@dataclass
+class FunnelRow:
+    id: str
+    symbol: str
+    name: str
+    skipped: bool
+    reason: Optional[str]
+    s1_perps: bool
+    s2_bitget: bool
+    s3_bsc_pancake: bool
+    top_spot_cex: Optional[str] = None
+    lp_pair: Optional[Dict[str, Any]] = None
+
+# lock globale per lo stato (thread-safe)
+state_lock = threading.Lock()
+
+def screen_coin(cid: str, sym_hint: str,
+                binance_bases: Dict[str, Any],
+                bybit_bases: Dict[str, Any],
+                cg_rl: RateLimiter, ds_rl: RateLimiter,
+                state: Dict[str, Any]) -> Tuple[FunnelRow, Optional[CheckResult]]:
+    # ---- Pre-skip da indice locale ----
+    with state_lock:
+        st = dict(state.get(cid, {}))
+    last_checked = st.get("last_checked")
+    if not stale_by_days(last_checked, settings.skip_unchanged_days):
+        fr = FunnelRow(id=cid, symbol=(sym_hint or "").upper(), name=cid,
+                       skipped=True, reason=f"recent (<= {settings.skip_unchanged_days}d)",
+                       s1_perps=False, s2_bitget=False, s3_bsc_pancake=False)
+        return fr, None
+
+    fr = FunnelRow(id=cid, symbol=(sym_hint or "").upper(), name=cid,
+                   skipped=False, reason=None,
+                   s1_perps=False, s2_bitget=False, s3_bsc_pancake=False)
+
+    # ---- Stage 1: Perps su entrambi ----
+    if not has_perps_on_both(binance_bases, bybit_bases, fr.symbol):
+        with state_lock:
+            state[cid] = {**st, "last_checked": now_ts(), "status": "no_perps"}
+        return fr, None
+    fr.s1_perps = True
+
+    # ---- CoinGecko ----
+    try:
+        coin = fetch_coin_full(cid, cg_rl)
+        fr.name = coin.get("name") or cid
+    except Exception as e:
+        if settings.verbose and not settings.quiet:
+            log_info(f"[WARN] CoinGecko error for {cid}: {e}")
+        with state_lock:
+            state[cid] = {**st, "last_checked": now_ts(), "status": "cg_error"}
+        return fr, None
+
+    reasons_ok: List[str] = []
+    reasons_ko: List[str] = []
+    extra: Dict[str, Any] = {}
+
+    # ---- Stage 2: Top spot CEX = Bitget ----
+    bitget_ok, top_name = top_spot_cex_bitget_ok(coin, settings.bitget_dominance, settings.max_tickers_scan)
+    extra["top_spot_cex"] = top_name
+    fr.top_spot_cex = top_name
+    if not bitget_ok:
+        with state_lock:
+            state[cid] = {**st, "last_checked": now_ts(), "status": "top_cex_not_bitget", "top": top_name}
+        return fr, None
+    fr.s2_bitget = True
+    reasons_ok.append("Top spot CEX = Bitget")
+
+    # ---- Stage 3: BSC + main LP Pancake ----
+    bsc_addr = bsc_contract_address(coin)
+    extra["bsc_address"] = bsc_addr
+    if not bsc_addr:
+        with state_lock:
+            state[cid] = {**st, "last_checked": now_ts(), "status": "no_bsc"}
+        return fr, None
+    try:
+        pair = main_bsc_pair_on_pancake(bsc_addr, ds_rl)
+    except Exception as e:
+        pair = None
+        if settings.verbose and not settings.quiet:
+            log_info(f"[WARN] Dexscreener error for {cid}: {e}")
+    if not pair:
+        with state_lock:
+            state[cid] = {**st, "last_checked": now_ts(), "status": "no_pancake_or_low_liq"}
+        return fr, None
+
+    dexid = (pair.get("dexId") or "")
+    if settings.require_v3 and "v3" not in dexid.lower():
+        with state_lock:
+            state[cid] = {**st, "last_checked": now_ts(), "status": "pancake_not_v3"}
+        return fr, None
+
+    lp_liq = float(((pair.get("liquidity") or {}).get("usd") or 0))
+    pool_addr = (pair.get("pairAddress") or "").lower()
+    fr.s3_bsc_pancake = True
+    fr.lp_pair = {
+        "dexId": dexid, "pairAddress": pool_addr,
+        "liquidityUsd": lp_liq, "priceUsd": pair.get("priceUsd"),
+    }
+    extra["lp_pair"] = fr.lp_pair
+    reasons_ok.append("LP principale Pancake" + (" V3" if "v3" in dexid.lower() else ""))
+
+    with state_lock:
+        state[cid] = {
+            "last_checked": now_ts(),
+            "status": "done",
+            "top": extra.get("top_spot_cex"),
+            "lp_pair": fr.lp_pair,
+        }
+
+    res = CheckResult(cid, fr.symbol, fr.name, reasons_ok, reasons_ko, extra)
+    return fr, res
+
+# --------------------------- Seeds --------------------------- #
+
+def list_market_id_symbols(pages: int, per_page: int, cg_rl: RateLimiter) -> List[tuple]:
+    rows: List[tuple] = []
+    for p in range(1, pages + 1):
+        url = f"{COINGECKO}/coins/markets?vs_currency=usd&order=market_cap_desc&per_page={per_page}&page={p}&sparkline=false&locale=en"
+        cg_rl.wait()
+        data = Http.get(url).json()
+        for x in data:
+            cid = x.get("id")
+            sym = (x.get("symbol") or "").upper()
+            if cid: rows.append((cid, sym))
+    return rows
+
+def build_seed_from_perps(cg_rl: RateLimiter,
+                          binance_bases: Dict[str, Any],
+                          bybit_bases: Dict[str, Any]) -> List[Tuple[str, str]]:
+    """Intersezione Binance∩Bybit (base symbol) -> mappatura a CG id via /coins/list?include_platform=true"""
+    inter_syms = sorted(set(binance_bases.keys()) & set(bybit_bases.keys()))
+    if RICH and not settings.quiet:
+        console.print(Panel.fit(f"[bold]Seed from PERPS[/bold]\nBinance bases: {len(binance_bases)} | Bybit bases: {len(bybit_bases)}\nIntersezione: [bold]{len(inter_syms)}[/bold]",
+                                title="Seed", border_style="cyan"))
+    else:
+        log_info(f"Seed from PERPS — intersezione: {len(inter_syms)}")
+
+    cg_list = load_cg_coins_list_cached(cg_rl)
+
+    mapped: List[Tuple[str, str]] = []
+    unmapped: List[str] = []
+    for sym in inter_syms:
+        picked = choose_best_cg_id_for_symbol(sym, cg_list)
+        if picked is None:
+            unmapped.append(sym)
         else:
-            buf = (buf + "\n\n" + blk) if buf else blk
-    if buf:
-        parts.append(buf)
-    return parts
+            cid, _name = picked
+            mapped.append((cid, sym))
 
-def send_telegram_chunked(html_text: str,
-                          token: str,
-                          chat_id: str,
-                          max_chars: int = 3800,
-                          sleep_s: float = 0.8,
-                          parse_mode: str = "HTML") -> bool:
-    api = f"https://api.telegram.org/bot{token}/sendMessage"
-    parts = chunk_by_blocks(html_text, max_chars=max_chars, split_marker="\n\n• ")
-    ok_all = True
-    for i, p in enumerate(parts, 1):
-        r = requests.post(api, data={
-            "chat_id": chat_id,
-            "text": p,
-            "parse_mode": parse_mode,
-            "disable_web_page_preview": True,
-        })
-        try:
-            r.raise_for_status()
-            ok = bool((r.json() or {}).get("ok"))
-        except Exception:
-            ok = False
-        if not ok:
-            ok_all = False
-            try:
-                print(f"[Send fail part {i}] {r.text}", file=sys.stderr)
-            except Exception:
-                print(f"[Send fail part {i}] HTTP {r.status_code}", file=sys.stderr)
-        time.sleep(sleep_s)
-    return ok_all
+    if RICH and not settings.quiet:
+        t = Table(title="Mappatura Symbol → CoinGecko ID", box=box.SIMPLE_HEAVY)
+        t.add_column("Tot Intersezione", justify="right")
+        t.add_column("Mappati", justify="right")
+        t.add_column("Non mappati", justify="right")
+        t.add_row(str(len(inter_syms)), str(len(mapped)), str(len(unmapped)))
+        console.print(t)
+        if unmapped[:20]:
+            console.print(Panel.fit(", ".join(unmapped[:20]) + (f" ... (+{len(unmapped)-20})" if len(unmapped) > 20 else ""),
+                                    title="Esempi non mappati", border_style="yellow"))
+    else:
+        log_info(f"Intersezione: {len(inter_syms)} | Mappati: {len(mapped)} | Non mappati: {len(unmapped)}")
 
-# ---------- Screener bridge (opzionale) ---------- #
+    return mapped  # [(cg_id, symbol)]
 
-def run_test4_and_capture(python_bin: str, min_liq: int, workers: int,
-                          dominance: float, max_tickers_scan: int,
-                          rps_cg: float, rps_ds: float, funnel_show: int,
-                          skip_unchanged_days: int) -> str:
-    test4_path = SCRIPT_DIR / "test4.py"
-    cmd = [
-        python_bin, str(test4_path),
-        "--seed-from", "perps",
-        "--workers", str(workers),
-        "--min-liq", str(min_liq),
-        "--max-tickers-scan", str(max_tickers_scan),
-        "--dominance", str(dominance),
-        "--skip-unchanged-days", str(skip_unchanged_days),
-        "--rps-cg", str(rps_cg),
-        "--rps-ds", str(rps_ds),
-        "--funnel-show", str(funnel_show),
-    ]
-    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    return ANSI_RE.sub("", res.stdout or "")
+# --------------------------- Rendering TOP-only --------------------------- #
 
-def parse_top_only(stdout: str) -> List[Dict[str, Any]]:
-    entries = []
-    in_top = False
-    for raw in (stdout or "").splitlines():
-        line = (raw or "").strip()
-        if not line:
-            continue
-        if line.startswith(TOP_HEADER):
-            in_top = True
-            continue
-        if not in_top:
-            continue
-        m = re.match(
-            r"""^
-            ([A-Z0-9]+)\s*[·•\-]\s*
-            (.*?)\s*[·•\-]\s*
-            LP:\s*([\d\.\$]+)\s*[·•\-]\s*
-            Pool:\s*(0x[a-fA-F0-9]{40})\s*$""",
-            line, flags=re.X,
-        )
-        if m:
-            symbol = m.group(1).upper()
-            name = m.group(2).strip()
-            pair = m.group(4).lower()
-            entries.append({"symbol": symbol, "name": name, "pair": pair})
-    return entries
-
-# ---------- DexScreener ---------- #
-
-def fetch_pair(pair: str) -> Optional[Dict[str, Any]]:
+def format_eur_style_usd(amount: Any) -> str:
+    """Formatta 1234567.89 -> '1.234.567$' (senza decimali, stile Eu con punto come separatore migliaia)."""
     try:
-        url = DEX_PAIRS_URL.format(pair=pair)
-        r = requests.get(url, headers=HEADERS, timeout=HTTP_TIMEOUT)
-        r.raise_for_status()
-        j = r.json()
-        p = (j.get("pairs") or [None])[0] or None
-        return p
+        iv = int(float(amount))
+        return f"{iv:,}$".replace(",", ".")
     except Exception:
-        return None
+        return f"{amount}$"
 
-def extract_volumes(p: Dict[str, Any]) -> Dict[str, Optional[float]]:
-    vol = (p.get("volume") or {}) if p else {}
-    def _f(x):
-        try:
-            return float(x) if x is not None else None
-        except Exception:
-            return None
-    h1  = _f(vol.get("h1"))
-    h6  = _f(vol.get("h6"))
-    h24 = _f(vol.get("h24"))
-    m5  = _f(vol.get("m5"))  # può non essere presente su alcune pair
-    if h1 is None:
-        if h6 is not None:
-            h1 = h6 / 6.0
-        elif h24 is not None:
-            h1 = h24 / 24.0
-    return {"m5": m5, "h1": h1, "h6": h6, "h24": h24}
-
-# ---------- State (m5 rolling buffer) ---------- #
-
-def load_prev_state(path: Path) -> Optional[Dict[str, Any]]:
-    if not path.exists():
-        return None
-    try:
-        return json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
-
-def save_state(path: Path, data: Dict[str, Any]):
-    ensure_dir(str(path.parent))
-    try:
-        path.write_text(json.dumps(data), encoding="utf-8")
-    except Exception:
-        pass
-
-def trim_history(hist: List[Dict[str, Any]], now_ts: int) -> List[Dict[str, Any]]:
-    out = []
-    for it in hist or []:
-        try:
-            ts = int(it.get("ts", 0))
-            v = float(it.get("vol_m5"))
-            if v >= 0 and now_ts - ts <= RETENTION_SEC:
-                out.append({"ts": ts, "vol_m5": v})
-        except Exception:
-            continue
-    out.sort(key=lambda x: x["ts"])
-    return out
-
-def sum_window(hist: List[Dict[str, Any]], start_ts: int, end_ts: int) -> Optional[float]:
-    """Somma i campioni m5 con timestamp in [start_ts, end_ts]."""
-    if start_ts >= end_ts:
-        return 0.0
-    vals = [h["vol_m5"] for h in hist if start_ts <= h["ts"] <= end_ts]
-    if not vals:
-        return None
-    return float(sum(vals))
-
-def count_window(hist: List[Dict[str, Any]], start_ts: int, end_ts: int) -> int:
-    return sum(1 for h in hist if start_ts <= h["ts"] <= end_ts)
-
-def calc_vol30m_from_m5(prev_hist: List[Dict[str, Any]], now_ts: int, vol_m5: Optional[float]):
+def build_top_only_output(results: List[CheckResult]) -> str:
+    """Crea SOLO la sezione:
+       — Tutti e 3 i parametri (TOP) —
+       SYMBOL · Name · LP: 1.234.567$ · Pool: 0x....
     """
-    Aggiorna la history con il campione corrente e calcola:
-    - vol30_now: somma m5 negli ultimi 30 minuti
-    - vol30_prev: somma m5 nei 30 minuti precedenti
-    - cov_count: n° campioni negli ultimi 30' (copertura)
-    """
-    hist = trim_history(prev_hist or [], now_ts)
-    if vol_m5 is not None:
-        hist.append({"ts": now_ts, "vol_m5": float(vol_m5)})
+    all3 = [r for r in results if r.score() >= 2 and r.ok()]  # 2 OK: Bitget + Pancake (BSC)
+    lines: List[str] = ["— Tutti e 3 i parametri (TOP) —", ""]
+    for r in all3:
+        lp = r.extra.get("lp_pair", {}) if r.extra else {}
+        liq = format_eur_style_usd(lp.get("liquidityUsd"))
+        pool_addr = lp.get("pairAddress") or ""
+        name = r.name or r.id
+        # Nessun troncamento del pool address
+        lines.append(f"{r.symbol} · {name} · LP: {liq} · Pool: {pool_addr}")
+    return "\n".join(lines)
 
-    start_now = now_ts - WIN_30M_SEC
-    end_now   = now_ts
-    start_prev = now_ts - 2*WIN_30M_SEC
-    end_prev   = now_ts - WIN_30M_SEC
+# --------------------------- CLI --------------------------- #
 
-    vol30_now  = sum_window(hist, start_now, end_now)
-    vol30_prev = sum_window(hist, start_prev, end_prev)
-    cov_count  = count_window(hist, start_now, end_now)  # 6 = copertura piena
+def parse_args() -> Settings:
+    ap = argparse.ArgumentParser(description="Crypto screener per CEX/DEX (3 criteri + funnel, cache-aware & robust, perps-first)")
+    ap.add_argument("--pages", type=int, default=1)
+    ap.add_argument("--per-page", type=int, default=250)
+    ap.add_argument("--ids", type=str, default=None, help="Lista di ids CoinGecko separati da virgola (bypassa seed)")
+    ap.add_argument("--workers", type=int, default=6, help="Numero di worker concorrenti")
 
-    return hist, vol30_now, vol30_prev, cov_count
+    ap.add_argument("--min-liq", type=float, default=150000.0)
+    ap.add_argument("--require-v3", action="store_true", help="Accetta solo LP Pancake v3")
 
-# ---------- Message ---------- #
+    # compat flags non usati (mantenuti)
+    ap.add_argument("--price-mult", type=float, default=3.0, help=argparse.SUPPRESS)
+    ap.add_argument("--max-ticks-above", type=int, default=0, help=argparse.SUPPRESS)
+    ap.add_argument("--ttl-sg", type=int, default=24*3600, help=argparse.SUPPRESS)
+    ap.add_argument("--rps-sg", type=float, default=1.0, help=argparse.SUPPRESS)
+    ap.add_argument("--dex-liq-delta", type=float, default=0.4, help=argparse.SUPPRESS)
 
-def build_message(rows: List[Dict[str, Any]]) -> str:
-    """
-    rows: list di dict con chiavi:
-      symbol, name, pair, url, base_addr, base_sym, quote_addr, quote_sym,
-      vol_h1, vol30m, vol30m_prev, delta30_abs, delta30_pct, cov_count
-    """
-    rows.sort(key=lambda r: (r.get("delta30_pct") if r.get("delta30_pct") is not None else -1e18), reverse=True)
+    ap.add_argument("--dominance", type=float, default=0.60, help="Dominanza Bitget per short-circuit (0-1)")
+    ap.add_argument("--max-tickers-scan", type=int, default=15)
 
-    header = []
-    header.append("⏱️ <b>VOLUME WATCH</b> — Vol(30m) esatto • Δ ultimi 30’ vs 30’ precedenti • Copertura")
-    header.append(f"<i>Aggiornato:</i> {htmlesc(now_iso_local())}\n")
+    ap.add_argument("--ttl-cg", type=int, default=48*3600)
+    ap.add_argument("--ttl-perps", type=int, default=7*24*3600)
+    ap.add_argument("--ttl-ds", type=int, default=24*3600)
 
-    # Tabellone compatto
-    pre = []
-    pre.append(f"{'#':>2}  {'SYMBOL':8} {'Now30m':>12} {'Prev30m':>12} {'Δ$':>12} {'Δ%':>9} {'Cov':>6}")
-    pre.append("-"*72)
-    for i, r in enumerate(rows, start=1):
-        now30  = format_usd_int(r.get("vol30m")) if r.get("vol30m") is not None else (
-                 "~" + format_usd_int((r.get("vol_h1") or 0)/2.0) if r.get("vol_h1") is not None else "n.d.")
-        prev30 = format_usd_int(r.get("vol30m_prev")) if r.get("vol30m_prev") is not None else "n.d."
-        dabs   = format_usd_signed(r.get("delta30_abs")) if r.get("vol30m") is not None else "n.d."
-        dpct   = format_pct_signed(r.get("delta30_pct")) if r.get("vol30m") is not None else "n.d."
-        cov    = f"{int(r.get('cov_count') or 0)}/6"
-        sym    = (r.get("symbol") or "")[:8]
-        pre.append(f"{i:>2}. {sym:<8} {now30:>12} {prev30:>12} {dabs:>12} {dpct:>9} {cov:>6}")
+    ap.add_argument("--skip-unchanged-days", type=int, default=3)
 
-    # Dettagli per coin (clic sul nome = DexScreener con pool address)
-    blocks = []
-    for r in rows:
-        pair = r["pair"]
-        # Forziamo sempre il link al pair (pool) su DexScreener
-        url = f"https://dexscreener.com/bsc/{htmlesc(pair)}"
+    ap.add_argument("--cache-root", type=str, default=".cache")
+    ap.add_argument("--state-root", type=str, default="state")
 
-        sym = r.get("symbol") or "SYM"
-        name = r.get("name") or "—"
-        base_sym = r.get("base_sym") or "BASE"
-        quote_sym = r.get("quote_sym") or "QUOTE"
-        base_addr = (r.get("base_addr") or "").lower()
-        quote_addr = (r.get("quote_addr") or "").lower()
-
-        # KPI
-        now30  = r.get("vol30m")
-        prev30 = r.get("vol30m_prev")
-        dabs   = r.get("delta30_abs")
-        dpct   = r.get("delta30_pct")
-        cov    = f"{int(r.get('cov_count') or 0)}/6"
-        vol1h  = r.get("vol_h1")
-
-        if dpct is None:
-            arrow = "➖"
-            dabs_s = "n.d."
-            dpct_s = "n.d."
-        else:
-            arrow = "⬆️" if (dpct > 0) else ("⬇️" if (dpct < 0) else "➖")
-            dabs_s = format_usd_signed(dabs)
-            dpct_s = format_pct_signed(dpct)
-
-        now30_s  = format_usd_int(now30) if now30 is not None else (
-                   "~" + format_usd_int((vol1h or 0)/2.0) if vol1h is not None else "n.d.")
-        prev30_s = format_usd_int(prev30) if prev30 is not None else "n.d."
-        vol1h_s  = format_usd_int(vol1h) if vol1h is not None else "n.d."
-
-        blocks.append(
-            "\n".join([
-                f"• <a href=\"{url}\"><b>{htmlesc(sym)}</b> — {htmlesc(name)}</a>",
-                f"  {arrow} <b>Vol30m ora:</b> {htmlesc(now30_s)}  •  <b>30' fa:</b> {htmlesc(prev30_s)}  •  <b>Δ:</b> {htmlesc(dabs_s)} (<b>{htmlesc(dpct_s)}</b>)",
-                f"  📊 Vol1h: <b>{htmlesc(vol1h_s)}</b>  •  🧩 Copertura campioni: <b>{htmlesc(cov)}</b>",
-                f"  🔗 Pool: <a href=\"https://dexscreener.com/bsc/{htmlesc(pair)}\">DexScreener</a> • "
-                f"<a href=\"https://bscscan.com/address/{htmlesc(pair)}\">BscScan</a>",
-                f"  <code>{htmlesc(pair)}</code>",
-                f"  🪙 Tokens: "
-                f"{htmlesc(base_sym)} <a href=\"https://bscscan.com/token/{htmlesc(base_addr)}\">{htmlesc(short_addr(base_addr))}</a>  /  "
-                f"{htmlesc(quote_sym)} <a href=\"https://bscscan.com/token/{htmlesc(quote_addr)}\">{htmlesc(short_addr(quote_addr))}</a>",
-            ])
-        )
-
-    parts = []
-    parts.append("\n".join(header))
-    parts.append("<pre>" + "\n".join(pre) + "</pre>")
-    parts.append("\n".join(blocks))
-    parts.append("\n<i>Note:</i> Vol(30m) è somma di campioni m5; se m5 manca mostriamo ~Vol(30m) ≈ Vol(1h)/2 e la Δ non è disponibile. Copertura 6/6 = 30’ completi.")
-    return "\n\n".join(parts)
-
-# ---------- Main ---------- #
-
-def main():
-    ap = argparse.ArgumentParser(description="Volume watcher — Vol(30m) esatto da m5 + Δ in $ e % vs 30’ precedenti")
-    ap.add_argument("--mode", choices=["from-screener", "from-file"], default="from-screener",
-                    help="Origine lista pair: 'from-screener' rilancia test4.py, 'from-file' legge JSON")
-    ap.add_argument("--pairs-file", type=str, default="state/top_pairs.json",
-                    help="File JSON con [{'symbol','name','pair'}...]")
-    # Parametri per test4.py quando mode=from-screener
-    ap.add_argument("--python-bin", default=sys.executable)
-    ap.add_argument("--min-liq", type=int, default=200000)
-    ap.add_argument("--workers", type=int, default=12)
-    ap.add_argument("--dominance", type=float, default=0.30)
-    ap.add_argument("--max-tickers-scan", type=int, default=40)
-    ap.add_argument("--rps-cg", type=float, default=0.5)
+    ap.add_argument("--rps-cg", type=float, default=1.0)
     ap.add_argument("--rps-ds", type=float, default=2.0)
-    ap.add_argument("--funnel-show", type=int, default=100)
-    ap.add_argument("--skip-unchanged-days", type=int, default=0)
-    # Invio Telegram
-    ap.add_argument("--send-telegram", action="store_true", help="Se presente, invia il messaggio a Telegram in chunk")
-    ap.add_argument("--max-chars", type=int, default=3800, help="Max caratteri per chunk Telegram")
-    ap.add_argument("--tg-sleep", type=float, default=0.8, help="Pausa tra i chunk Telegram")
-    ap.add_argument("--tg-parse-mode", default="HTML",
-                    choices=["HTML", "MarkdownV2", "Markdown"], help="Parse mode Telegram")
-    ap.add_argument("--tg-token", default=None, help="Override TG_BOT_TOKEN (altrimenti legge da env)")
-    ap.add_argument("--tg-chat", default=None, help="Override TG_CHAT_ID (altrimenti legge da env)")
+
+    ap.add_argument("--funnel-show", type=int, default=30, help="Max righe da mostrare per stage")
+    ap.add_argument("--seed-from", type=str, choices=["perps","cg"], default="perps",
+                    help="Origine seed: 'perps' (intersezione Binance∩Bybit) o 'cg' (coins/markets)")
+
+    ap.add_argument("--quiet", action="store_true")
+    ap.add_argument("--no-verbose", dest="verbose", action="store_false")
+    ap.set_defaults(verbose=True)
     args = ap.parse_args()
 
-    # 1) Carica lista pair
-    if args.mode == "from-file":
-        try:
-            pairs_path = Path(args.pairs_file)
-            data = json.loads(pairs_path.read_text(encoding="utf-8"))
-        except Exception:
-            data = []
-        pairs = [{"symbol": d.get("symbol"), "name": d.get("name"), "pair": d.get("pair")} for d in (data or [])]
+    s = Settings(
+        pages=args.pages, per_page=args.per_page,
+        ids=[x.strip() for x in args.ids.split(",")] if args.ids else None,
+        workers=max(1, args.workers),
+
+        min_pair_liquidity_usd=args.min_liq, require_v3=args.require_v3,
+
+        max_tickers_scan=args.max_tickers_scan, bitget_dominance=args.dominance,
+
+        ttl_cg_coin_sec=args.ttl_cg, ttl_perps_sec=args.ttl_perps,
+        ttl_dexscreener_sec=args.ttl_ds,
+
+        skip_unchanged_days=args.skip_unchanged_days,
+
+        cache_root=args.cache_root, state_root=args.state_root,
+        verbose=args.verbose, quiet=args.quiet,
+
+        rps_cg=max(0.2, args.rps_cg), rps_ds=max(0.5, args.rps_ds),
+
+        funnel_show=max(1, args.funnel_show),
+
+        seed_from=args.seed_from,
+    )
+    return s
+
+# --------------------------- Main --------------------------- #
+
+def main():
+    global settings
+    settings = parse_args()
+
+    # Forza modalità "TOP-only": nessun altro output
+    settings.quiet = True
+    settings.verbose = False
+
+    ensure_dir(settings.cache_root); ensure_dir(settings.state_root)
+
+    # Rate limiters
+    cg_rl = RateLimiter(settings.rps_cg)
+    ds_rl = RateLimiter(settings.rps_ds)
+
+    # Perps (cache 7g)
+    binance_bases = load_binance_perp_bases_cached()
+    bybit_bases   = load_bybit_perp_bases_cached()
+
+    # Seeds
+    if settings.ids:
+        id_syms = [(cid, "") for cid in settings.ids]
     else:
-        try:
-            stdout = run_test4_and_capture(
-                python_bin=args.python_bin,
-                min_liq=args.min_liq,
-                workers=args.workers,
-                dominance=args.dominance,
-                max_tickers_scan=args.max_tickers_scan,
-                rps_cg=args.rps_cg,
-                rps_ds=args.rps_ds,
-                funnel_show=args.funnel_show,
-                skip_unchanged_days=args.skip_unchanged_days,
-            )
-            pairs = parse_top_only(stdout)
-        except subprocess.CalledProcessError as e:
-            print("ERROR: test4.py failed", file=sys.stderr)
-            print(e.stdout); print(e.stderr, file=sys.stderr)
-            sys.exit(1)
-
-    if not pairs:
-        msg = "⚠️ Nessuna pair TOP da monitorare."
-        ensure_dir("state/telegram")
-        Path("state/telegram/msg_volwatch.html").write_text(msg, encoding="utf-8")
-        print(msg)
-        return
-
-    # 2) Per-pair: fetch, calcola Vol(30m) da m5, Δ vs prev, salva stato
-    rows: List[Dict[str, Any]] = []
-    state_dir = Path("state/volwatch")
-    ensure_dir(str(state_dir))
-    now_ts = int(time.time())
-
-    for pinfo in pairs:
-        sym = pinfo["symbol"]; name = pinfo["name"]; pair = pinfo["pair"]
-        data = fetch_pair(pair) or {}
-        vols = extract_volumes(data)
-        vol_h1 = vols.get("h1")
-        vol_m5 = vols.get("m5")
-
-        # Metadati/token
-        base = (data or {}).get("baseToken") or {}
-        quote = (data or {}).get("quoteToken") or {}
-        base_addr = (base.get("address") or "").lower()
-        quote_addr = (quote.get("address") or "").lower()
-        base_sym = (base.get("symbol") or "" ).upper() or "BASE"
-        quote_sym = (quote.get("symbol") or "").upper() or "QUOTE"
-
-        state_path = state_dir / f"{pair}.json"
-        prev = load_prev_state(state_path) or {}
-        prev_hist = prev.get("m5_history") or []
-
-        hist, vol30_now, vol30_prev, cov_count = calc_vol30m_from_m5(prev_hist, now_ts, vol_m5)
-
-        delta30_abs = None
-        delta30_pct = None
-        if vol30_now is not None and vol30_prev is not None:
-            try:
-                delta30_abs = float(vol30_now) - float(vol30_prev)
-                if vol30_prev != 0:
-                    delta30_pct = (delta30_abs / float(vol30_prev)) * 100.0
-            except Exception:
-                delta30_abs = None
-                delta30_pct = None
-
-        save_state(state_path, {"ts": now_ts, "vol_h1": vol_h1, "m5_history": hist})
-
-        rows.append({
-            "symbol": sym,
-            "name": name,
-            "pair": pair,
-            "base_addr": base_addr,
-            "base_sym": base_sym,
-            "quote_addr": quote_addr,
-            "quote_sym": quote_sym,
-            "vol_h1": vol_h1,
-            "vol30m": vol30_now,        # ultimi 30'
-            "vol30m_prev": vol30_prev,  # 30' precedenti
-            "delta30_abs": delta30_abs, # differenza in $
-            "delta30_pct": delta30_pct, # differenza in %
-            "cov_count": cov_count,     # 0..6
-        })
-
-    # 3) Costruisci messaggio HTML e salva
-    ensure_dir("state/telegram")
-    html = build_message(rows)
-    out_path = Path("state/telegram/msg_volwatch.html")
-    out_path.write_text(html, encoding="utf-8")
-    print(f"OK: scritto {out_path} ({len(html)} chars)")
-
-    # 4) Invio Telegram (opzionale)
-    if args.send_telegram:
-        token = args.tg_token or os.environ.get("TG_BOT_TOKEN", "")
-        chat  = args.tg_chat  or os.environ.get("TG_CHAT_ID", "")
-        if not token or not chat:
-            print("Telegram disabled: TG_BOT_TOKEN/TG_CHAT_ID mancanti.", file=sys.stderr)
+        if settings.seed_from == "perps":
+            id_syms = build_seed_from_perps(cg_rl, binance_bases, bybit_bases)  # [(cg_id, symbol)]
         else:
-            ok = send_telegram_chunked(html, token, chat,
-                                       max_chars=args.max_chars,
-                                       sleep_s=args.tg_sleep,
-                                       parse_mode=args.tg_parse_mode)
-            print(f"Telegram send: {'OK' if ok else 'PARTIAL/FAIL'}")
+            id_syms = list_market_id_symbols(settings.pages, settings.per_page, cg_rl)
+            # Pre-filtra per simbolo: solo quelli con perps su entrambi
+            inter = set(binance_bases.keys()) & set(bybit_bases.keys())
+            id_syms = [row for row in id_syms if (row[1] or "").upper() in inter]
+
+    # Stato persistente
+    state = load_state()
+
+    # Concorrenza controllata
+    results: List[CheckResult] = []
+    funnel_rows: List[FunnelRow] = []
+
+    with ThreadPoolExecutor(max_workers=settings.workers) as ex:
+        futures = {
+            ex.submit(screen_coin, cid, sym, binance_bases, bybit_bases, cg_rl, ds_rl, state): cid
+            for (cid, sym) in id_syms
+        }
+        for fut in as_completed(futures):
+            fr, res = fut.result()
+            funnel_rows.append(fr)
+            if res: results.append(res)
+
+    # Salva stato (stub)
+    save_state(state)
+
+    # --- OUTPUT UNICO RICHIESTO (TOP-only) ---
+    out = build_top_only_output(results)
+    print(out)
 
 if __name__ == "__main__":
     main()
