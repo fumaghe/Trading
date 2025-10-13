@@ -40,7 +40,7 @@ jobs:
 
       - name: Run volumes_watch.py (single Telegram message)
         run: |
-          python volumes_watch.py \
+          python volume_watch.py \
             --mode from-screener \
             --min-liq 200000 \
             --workers 12 \
