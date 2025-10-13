@@ -8,7 +8,6 @@ on:
 permissions:
   contents: write
 
-# Evita overlap se una run dura troppo
 concurrency:
   group: volwatch
   cancel-in-progress: true
@@ -16,9 +15,6 @@ concurrency:
 jobs:
   volwatch:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: Trading
     env:
       PYTHONIOENCODING: "utf-8"
       TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
