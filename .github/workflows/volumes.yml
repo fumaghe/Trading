@@ -38,37 +38,9 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests tenacity
 
-      - name: Debug repo layout
+      - name: Run volumes_watch.py (single Telegram message)
         run: |
-          echo "PWD:"
-          pwd
-          echo "Root listing:"
-          ls -la
-          if [ -d Trading ]; then
-            echo "Trading/ listing:"
-            ls -la Trading
-          fi
-
-      - name: Run Volume Watch (autodetect path + flags)
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          # Trova lo script nella root o in Trading/
-          PY="volume_watch.py"
-          if [ -f "Trading/volume_watch.py" ]; then
-            PY="Trading/volume_watch.py"
-          elif [ ! -f "$PY" ]; then
-            echo "::error::volume_watch.py non trovato né in root né in Trading/"; exit 1
-          fi
-
-          # Sanity check: volume_watch.py deve supportare --mode
-          if ! grep -q -- "--mode" "$PY"; then
-            echo "::error::Il file $PY NON contiene --mode (probabilmente non è la versione corretta di volume_watch.py)."
-            exit 1
-          fi
-
-          python "$PY" \
+          python volumes_watch.py \
             --mode from-screener \
             --min-liq 200000 \
             --workers 12 \
@@ -85,9 +57,7 @@ jobs:
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Aggiungi sia i path in root che nel caso fossero in Trading/
           git add state/volwatch/*.json state/telegram/msg_volwatch.html state/top_pairs.json || true
-          git add Trading/state/volwatch/*.json Trading/state/telegram/msg_volwatch.html Trading/state/top_pairs.json || true
           if ! git diff --cached --quiet; then
             git commit -m "volwatch: update $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
             git push
