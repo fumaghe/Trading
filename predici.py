@@ -13,7 +13,12 @@
 #   (opzionali) pip install lightgbm xgboost scikit-learn
 
 """
-python predici.py 0xee2f63a49cb190962619183103d25af14ce5f538 --days 60 --count_sim 60 --relax 4.0 --chain bsc --allow_any_dex --no_quote_filter --save_ohlcv
+Esempio:
+python predici.py 0x03615af9bb8f983eb906b2017edd5701aea10c15 --chain bsc --days 90 --count_sim 1500 --top_k_exo 40 --relax 6.0 --allow_any_dex --no_quote_filter --dedup_base_off --min_liq 2000 --min_mcap 100000 --min_vol24 2000 --min_tx24 10 --min_age_days 0.1
+
+
+python predici.py 0x03615af9bb8f983eb906b2017edd5701aea10c15 --chain bsc --days 90 --count_sim 1500 --top_k_exo 150 --relax 15.0 --allow_any_dex --no_quote_filter --dedup_base_off --min_liq 0 --min_mcap 0 --min_vol24 0 --min_tx24 0 --min_age_days 0 --max_age_days 5000 --explain --diag
+
 """
 import os, sys, time, json, math, argparse, hashlib, sqlite3, traceback, warnings
 from typing import Any, Dict, List, Optional, Tuple
@@ -28,7 +33,7 @@ import matplotlib.dates as mdates
 
 # ---- clamp returns per stabilità ----
 CLIP_RET = 0.20          # max ±20% per step (5m) dopo la fase iniziale
-RET_WINSOR_LO = 0.003    # winsorization: 0.3° percentile
+RET_WINSOR_LO = 0.003    # winsorization: 0.3° percentile (usato nella vecchia versione)
 RET_WINSOR_HI = 0.997    # winsorization: 99.7° percentile
 
 # =================== Costanti e default ===================
@@ -42,7 +47,8 @@ DEFAULT_HEADERS = {
 }
 
 NETWORK = "bsc"  # default rete
-DRIFT_CAP_24H = 3.0
+DRIFT_CAP_24H = 3.0  # cap sulla deriva cumulata in log-return nelle 24h (e^-3..e^3 ~ 0.05x..20x)
+
 # Quote tokens comuni su BSC
 WBNB = "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c".lower()
 USDT = "0x55d398326f99059ff775485246999027b3197955".lower()
@@ -54,6 +60,22 @@ DEFAULT_PCS_DEX_IDS = (
     "pancakeswap","pancakeswapv2","pancakeswap-v2",
     "pancakeswapv3","pancakeswap-v3"
 )
+
+# --- Soglie di default per i filtri adattivi (overridable da CLI) ---
+DEFAULT_FLOORS = {
+    "liq": 2e4,        # 20k USD
+    "mcap": 1e6,       # 1M USD
+    "vol24": 1e4,      # 10k USD
+    "tx24": 50,        # 50 tx
+    "age_days": 0.5,   # 12h
+}
+DEFAULT_CAPS = {
+    "liq": 1e9,
+    "mcap": 1e10,
+    "vol24": 5e8,
+    "tx24": 2_000_000,
+    "age_days": 720.0,
+}
 
 # Rate limit per host
 HOST_MIN_INTERVAL = {
@@ -237,18 +259,26 @@ def _band(val, low_mult, high_mult, low_floor, high_cap):
         lo, hi = hi * 0.5, hi
     return lo, hi
 
-def adaptive_filters(tgt: Dict[str, Any], relax: float) -> Dict[str, float]:
+def adaptive_filters(
+    tgt: Dict[str, Any],
+    relax: float,
+    floors: Optional[Dict[str, float]] = None,
+    caps: Optional[Dict[str, float]] = None,
+) -> Dict[str, float]:
+    floors = floors or DEFAULT_FLOORS
+    caps   = caps   or DEFAULT_CAPS
+
     liq = max(_liq_usd(tgt), 1.0)
     mcap = max(_mcap_or_fdv(tgt), 1.0)
     vol = max(_vol_h24(tgt), 1.0)
     tx  = max(_txns_h24(tgt), 1)
     age = _age_days_from_ms(tgt.get("pairCreatedAt")) or 7.0
 
-    liq_min, liq_max = _band(liq, 0.1/relax, 8.0*relax, 2e4, 1e9)
-    mcap_min,mcap_max= _band(mcap,0.1/relax, 8.0*relax, 1e6,  1e10)
-    vol_min, vol_max = _band(vol, 0.1/relax, 10.0*relax,1e4,  5e8)
-    tx_min,  tx_max  = _band(tx,  0.05/relax,10.0*relax,50,   2_000_000)
-    age_min, age_max = _band(age, 0.4/relax, 3.0*relax, 0.5,  720.0)
+    liq_min, liq_max = _band(liq, 0.1/relax, 8.0*relax, floors["liq"],  caps["liq"])
+    mcap_min,mcap_max= _band(mcap,0.1/relax, 8.0*relax, floors["mcap"], caps["mcap"])
+    vol_min, vol_max = _band(vol, 0.1/relax,10.0*relax, floors["vol24"],caps["vol24"])
+    tx_min,  tx_max  = _band(tx,  0.05/relax,10.0*relax,floors["tx24"], caps["tx24"])
+    age_min, age_max = _band(age, 0.4/relax, 3.0*relax, floors["age_days"], caps["age_days"])
 
     return {
         "liquidity_min": liq_min, "liquidity_max": liq_max,
@@ -360,11 +390,13 @@ def select_similar(
     source_mode: str,
     dedup_base: bool,
     explain: bool,
-    diag: bool
+    diag: bool,
+    floors: Optional[Dict[str, float]] = None,
+    caps: Optional[Dict[str, float]] = None,
 ) -> pd.DataFrame:
 
     tgt = ds_get_pair(chain, target_pair_addr)
-    filters = adaptive_filters(tgt, relax=relax)
+    filters = adaptive_filters(tgt, relax=relax, floors=floors, caps=caps)
 
     # quote filter mode
     if no_quote_filter:
@@ -671,8 +703,7 @@ def make_supervised(df_tgt: pd.DataFrame, df_exo: pd.DataFrame) -> pd.DataFrame:
     # target = log-return (t -> t+1)
     df["y"] = np.log(df["close"]).shift(-1) - np.log(df["close"])
 
-    # winsorization SIMMETRICA + clamp duro
-    # evitiamo bias: tagliamo in base al quantile dell'ampiezza |y|
+    # winsorization SIMMETRICA + clamp duro (in base all'ampiezza |y|)
     y_abs_q = df["y"].abs().quantile(RET_WINSOR_HI)
     y = df["y"].clip(lower=-float(y_abs_q), upper=float(y_abs_q))
     y = y.clip(-CLIP_RET, CLIP_RET)
@@ -742,6 +773,7 @@ def fit_model(df: pd.DataFrame):
     # qualità su validation (returns)
     yhat_val = model.predict(X_val)
 
+    # statistiche returns (per de-bias e diagnostica)
     ret_stats = {
         "mu": float(np.mean(y_train)),     # media da sottrarre in forecast (de-bias)
         "sigma": float(np.std(y_train)),
@@ -823,7 +855,6 @@ def recursive_forecast(df_full: pd.DataFrame, model, Xcols: List[str],
     base_bound = min(base_bound, CLIP_RET)
 
     rows = []
-    first_close = last_close
     cum_log_ret = 0.0  # drift cumulato in log-space
 
     for i in range(horizon_steps):
@@ -999,16 +1030,34 @@ def robust_select_similar(
     allow_any_dex: bool,
     no_quote_filter: bool,
     explain: bool,
-    diag: bool
+    diag: bool,
+    floors: Optional[Dict[str, float]] = None,
+    caps: Optional[Dict[str, float]] = None,
+    dedup_base: bool = True,
 ) -> pd.DataFrame:
+    floors = floors or DEFAULT_FLOORS
+    caps   = caps   or DEFAULT_CAPS
+
+    def scaled(factor: float) -> Dict[str, float]:
+        # riduci i floors per aprire i cancelli quando serve
+        return {
+            "liq": max(float(floors["liq"]) * factor, 0.0),
+            "mcap": max(float(floors["mcap"]) * factor, 0.0),
+            "vol24": max(float(floors["vol24"]) * factor, 0.0),
+            "tx24": max(float(floors["tx24"]) * factor, 0.0),
+            "age_days": max(float(floors["age_days"]) * factor, 0.0),
+        }
+
     tries = [
-        (relax, allow_any_dex, no_quote_filter),
-        (max(relax*1.5, 1.0), allow_any_dex, no_quote_filter),
-        (max(relax*2.5, 1.0), allow_any_dex, True),
-        (max(relax*3.5, 1.0), True, True),
+        # relax progressivo + allenta floors + quote/dex sempre più aperti
+        (relax,              allow_any_dex, no_quote_filter, floors,        dedup_base),
+        (max(relax*1.5,1.0), allow_any_dex, no_quote_filter, scaled(0.5),   dedup_base),
+        (max(relax*2.5,1.0), allow_any_dex, True,            scaled(0.2),   dedup_base),
+        (max(relax*3.5,1.0), True,          True,            scaled(0.0),   False),   # anche senza dedup
     ]
+
     last_err = None
-    for rlx, anydex, noq in tries:
+    for rlx, anydex, noq, fl, dedup in tries:
         try:
             return select_similar(
                 chain=chain,
@@ -1021,13 +1070,15 @@ def robust_select_similar(
                 no_quote_filter=noq,
                 anchors=None,
                 source_mode="both",
-                dedup_base=True,
+                dedup_base=dedup,
                 explain=explain,
-                diag=diag
+                diag=diag,
+                floors=fl,
+                caps=caps
             )
         except Exception as e:
             last_err = e
-            print(f"[info] select_similar fallita con relax={rlx}, allow_any_dex={anydex}, no_quote_filter={noq}: {e}")
+            print(f"[info] select_similar fallita con relax={rlx}, allow_any_dex={anydex}, no_quote_filter={noq}, dedup={dedup}: {e}")
             continue
     print("[warn] impossibile trovare simili coerenti. Procedo senza exogenous (fallback).")
     if last_err: print(f"[last_error] {last_err}")
@@ -1059,7 +1110,10 @@ def run_pipeline(
     save_ohlcv: bool = False,
     db_path: str = "data/predictor.db",
     explain: bool = False,
-    diag: bool = False
+    diag: bool = False,
+    floors: Optional[Dict[str, float]] = None,
+    caps: Optional[Dict[str, float]] = None,
+    dedup_base: bool = True,
 ):
     _ = ds_get_pair(chain, target_pair)
 
@@ -1067,7 +1121,8 @@ def run_pipeline(
     print("[1/6] Selezione pool simili…")
     df_sim = robust_select_similar(
         chain, target_pair, count_sim, relax,
-        dex_ids, allow_any_dex, no_quote_filter, explain, diag
+        dex_ids, allow_any_dex, no_quote_filter, explain, diag,
+        floors=floors, caps=caps, dedup_base=dedup_base
     )
     os.makedirs(os.path.join("data"), exist_ok=True)
     df_sim.to_csv(os.path.join("data","pools_list.csv"), index=False)
@@ -1182,11 +1237,31 @@ def parse_args():
     ap.add_argument("--db", default="data/predictor.db", help="Path DB SQLite per OHLCV (se --save_ohlcv)")
     ap.add_argument("--explain", action="store_true", help="Stampa motivi di esclusione conteggiati")
     ap.add_argument("--diag", action="store_true", help="Stampa diagnostica discovery")
+
+    # ---- nuovi parametri per floors/caps e dedup ----
+    ap.add_argument("--min_liq", type=float, default=DEFAULT_FLOORS["liq"], help="Floor liquidità USD (default 2e4)")
+    ap.add_argument("--min_mcap", type=float, default=DEFAULT_FLOORS["mcap"], help="Floor market cap USD (default 1e6)")
+    ap.add_argument("--min_vol24", type=float, default=DEFAULT_FLOORS["vol24"], help="Floor volume 24h USD (default 1e4)")
+    ap.add_argument("--min_tx24", type=float, default=float(DEFAULT_FLOORS["tx24"]), help="Floor tx 24h (default 50)")
+    ap.add_argument("--min_age_days", type=float, default=DEFAULT_FLOORS["age_days"], help="Floor età in giorni (default 0.5)")
+    ap.add_argument("--max_age_days", type=float, default=DEFAULT_CAPS["age_days"], help="Cap età in giorni (default 720)")
+    ap.add_argument("--dedup_base_off", action="store_true", help="Non deduplicare per base token (mantieni più pool dello stesso coin)")
     return ap.parse_args()
 
 def main():
     args = parse_args()
     dex_ids = [d.strip().lower() for d in (args.dex_ids or "").split(",") if d.strip()] or None
+
+    floors = {
+        "liq": args.min_liq,
+        "mcap": args.min_mcap,
+        "vol24": args.min_vol24,
+        "tx24": float(args.min_tx24),
+        "age_days": args.min_age_days,
+    }
+    caps = dict(DEFAULT_CAPS)
+    caps["age_days"] = args.max_age_days
+
     try:
         run_pipeline(
             target_pair=(args.target_pair or "").lower(),
@@ -1204,7 +1279,10 @@ def main():
             save_ohlcv=bool(args.save_ohlcv),
             db_path=args.db,
             explain=args.explain,
-            diag=args.diag
+            diag=args.diag,
+            floors=floors,
+            caps=caps,
+            dedup_base=(not args.dedup_base_off),
         )
     except Exception as e:
         print(f"Errore: {e}")
