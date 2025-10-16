@@ -1,15 +1,15 @@
 pair: 0x6531a0190c9977e48b3a5c8bc5226a6cd821d18c
 chain: bsc
 model: lgb
-n_train: 6613
-n_val: 1166
-val_mae_ret: 1.20197606e-02
-val_rmse_ret: 1.89673409e-02
-val_smape_ret%: 155.143226
-val_diracc%: 48.7993
-val_mae_price: 0.01526423
-val_rmse_price: 0.02561174
-val_mape_price%: 1.199012
+n_train: 6808
+n_val: 1201
+val_mae_ret: 8.82505328e-03
+val_rmse_ret: 1.24176030e-02
+val_smape_ret%: 150.027499
+val_diracc%: 49.8751
+val_mae_price: 0.01044577
+val_rmse_price: 0.01534898
+val_mape_price%: 0.882942
 relax: 12.0
 no_quote_filter: True
 count_sim: 1500
@@ -19,24 +19,24 @@ exo_alpha: 0.8  exo_decay: 0.992
 damp_base: 0.996  vol_target: 0.025
 clip_ret: 0.25  drift_cap_24h: 3.5
 top_features:
-  - exo_lag144: 1636
-  - exo_lag24: 1499
-  - ret_lag24: 1493
-  - ret_lag36: 1486
-  - sin_day: 1466
-  - exo_lag1: 1433
-  - ret_lag72: 1429
-  - vol_std3: 1319
-  - exo_lag36: 1316
-  - ret_lag6: 1311
-  - exo_lag6: 1298
-  - ret_std3: 1290
-  - ret_lag144: 1272
-  - exo_ret: 1271
-  - vol_lag144: 1265
-  - exo_lag2: 1251
-  - ret_lag12: 1249
-  - exo_lag72: 1246
-  - exo_lag12: 1243
-  - exo_lag3: 1219
-generated_utc: 2025-10-15T20:39:43.578938Z
+  - ret_lag72: 1555
+  - ret_lag24: 1553
+  - ret_lag36: 1552
+  - ret_lag12: 1518
+  - ret_lag3: 1502
+  - exo_lag6: 1502
+  - exo_lag72: 1480
+  - exo_lag36: 1469
+  - exo_lag3: 1459
+  - ret_lag144: 1443
+  - exo_lag2: 1424
+  - exo_lag144: 1422
+  - sin_day: 1405
+  - exo_lag12: 1394
+  - exo_lag24: 1368
+  - exo_ret: 1344
+  - ret: 1327
+  - ret_std3: 1324
+  - vol_std3: 1310
+  - vol_lag144: 1306
+generated_utc: 2025-10-16T16:34:18.060719Z

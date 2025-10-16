@@ -17,7 +17,7 @@ import matplotlib.dates as mdates
 
 
 """
-python predici.py 0xc4Dc171d499b3F5340bfFed8433BddCec8d33b04 --chain bsc --days 90 --count_sim 1500 --top_k_exo 150 --relax 12.0 --allow_any_dex --no_quote_filter --dedup_base_off --min_liq 0 --min_mcap 0 --min_vol24 0 --min_tx24 0 --min_age_days 0 --max_age_days 5000 --exo_alpha 0.8 --exo_decay 0.992 --damp_base 0.996 --vol_target 0.025 --clip_ret 0.25 --drift_cap_24h 3.5 --pi_z 2.05 --explain --diag
+python predici.py 0x6531a0190C9977E48b3a5c8bc5226a6cD821d18c --chain bsc --days 90 --count_sim 1500 --top_k_exo 150 --relax 12.0 --allow_any_dex --no_quote_filter --dedup_base_off --min_liq 0 --min_mcap 0 --min_vol24 0 --min_tx24 0 --min_age_days 0 --max_age_days 5000 --exo_alpha 0.8 --exo_decay 0.992 --damp_base 0.996 --vol_target 0.025 --clip_ret 0.25 --drift_cap_24h 3.5 --pi_z 2.05 --explain --diag
 """
 # =================== Costanti e default (parametrizzabili) ===================
 DEX_API = "https://api.dexscreener.com"
