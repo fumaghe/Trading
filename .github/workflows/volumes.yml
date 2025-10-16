@@ -36,9 +36,9 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install requests tenacity
+          pip install requests
 
-      - name: Run volumes_watch.py (single Telegram message)
+      - name: Run volume_watch.py (spike alert only)
         run: |
           python volume_watch.py \
             --mode from-screener \
@@ -50,6 +50,8 @@ jobs:
             --rps-ds 2.0 \
             --funnel-show 100 \
             --skip-unchanged-days 0 \
+            --threshold-x 10 \
+            --min-cov 10 \
             --send-telegram
 
       - name: Commit state (volwatch)

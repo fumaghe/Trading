@@ -2,13 +2,17 @@
 # -*- coding: utf-8 -*-
 
 """
-Volume Watch — run consigliato ogni 5 minuti
-- Calcola Vol(30m) esatto sommando i campioni DexScreener `volume.m5` persistiti su disco.
-- Calcola Δ% tra ultimi 30' e 30' precedenti (in %) e stampa un unico messaggio tabellare.
-- Fallback: se `m5` non è disponibile/insufficiente, mostra ~Vol30m ≈ h1/2 e Δ% n.d.
-- Output HTML tabellare unico: state/telegram/msg_volwatch.html (invio Telegram opzionale, singolo messaggio)
-- Stato per pair: state/volwatch/{pair}.json  (mantiene una history di campioni m5 ~75')
-- Salva e riusa la lista TOP in: state/top_pairs.json (fallback se test4.py fallisce)
+Volume Watch (spike 1h vs 1h precedente, trigger ≥ X)
+- Ogni 5 minuti:
+  * Legge lista TOP (da test4.py o da file) e per ogni pair interroga DexScreener.
+  * Mantiene uno stato per pair: state/volwatch/{pair}.json con campioni m5 (volume 5m).
+  * Calcola Vol(1h) come somma degli ultimi 12 campioni m5 e Vol(1h_prev) come i 12 precedenti.
+  * Se Vol(1h) ≥ X * Vol(1h_prev) (default X=10) e copertura sufficiente, triggera l’alert.
+- Output:
+  * Genera un unico messaggio HTML in state/telegram/msg_volwatch.html con SOLO le coin triggerate.
+  * Invia Telegram (singolo messaggio) solo se c’è almeno un trigger.
+- Fix inclusi:
+  * Timestamp allineato ai bucket 5m; dedup per ts; backoff per 429/5xx; HTML escape; retention 150'.
 """
 
 from __future__ import annotations
@@ -33,42 +37,27 @@ UA = (
 HEADERS = {"Accept": "application/json", "User-Agent": UA}
 HTTP_TIMEOUT = 30
 
-# Chain fissa BSC come nello script originale
-DEX_PAIRS_URL = "https://api.dexscreener.com/latest/dex/pairs/bsc/{pair}"
+CHAIN_SLUG = "bsc"
+DEX_PAIRS_URL = f"https://api.dexscreener.com/latest/dex/pairs/{CHAIN_SLUG}" + "/{pair}"
 TOP_HEADER = "— Tutti e 3 i parametri (TOP) —"
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-# Finestra e retention per il buffer m5
-WIN_30M_SEC = 30 * 60
-RETENTION_SEC = 75 * 60  # ~1h15 per sicurezza
+# Bucket e retention
+BUCKET_SEC = 300         # 5m
+HOUR_SEC   = 3600
+WIN_1H_SEC = HOUR_SEC
+RETENTION_SEC = 150 * 60  # 150' ~ 2.5h per coprire 2 ore + margine
 
 # ---------- Utils ---------- #
 
 def ensure_dir(p: str):
     Path(p).mkdir(parents=True, exist_ok=True)
 
-def format_usd_int(x: Any) -> str:
-    try:
-        return f"{int(round(float(x))):,}$".replace(",", ".")
-    except Exception:
-        return "n.d."
-
-def format_pct_signed(x: Optional[float]) -> str:
-    if x is None:
-        return "n.d."
-    sign = "+" if x > 0 else ""
-    try:
-        return f"{sign}{float(x):.2f}%"
-    except Exception:
-        return "n.d."
-
 def now_iso_local() -> str:
-    # timestamp locale (il runner ha TZ=Europe/Rome da workflow)
+    # runner con TZ=Europe/Rome consigliato
     return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
-
-# --- Telegram (singolo messaggio) ---
 
 def send_telegram_single(html_text: str,
                          token: str,
@@ -127,7 +116,7 @@ def parse_top_only(stdout: str) -> List[Dict[str, Any]]:
             continue
         m = re.match(
             r"""^
-            ([A-Z0-9._-]+)\s*[·•\-]\s*       # symbol (più permissivo)
+            ([A-Z0-9._-]+)\s*[·•\-]\s*       # symbol
             (.*?)\s*[·•\-]\s*
             LP:\s*([\d\.\$]+)\s*[·•\-]\s*
             Pool:\s*(0x[a-fA-F0-9]{40})\s*$""",
@@ -140,36 +129,30 @@ def parse_top_only(stdout: str) -> List[Dict[str, Any]]:
             entries.append({"symbol": symbol, "name": name, "pair": pair})
     return entries
 
-# ---------- DexScreener ---------- #
+# ---------- DexScreener (HTTP con backoff) ---------- #
 
 def fetch_pair(pair: str) -> Optional[Dict[str, Any]]:
+    url = DEX_PAIRS_URL.format(pair=pair)
+    backoff = 1.0
+    for _ in range(5):
+        try:
+            r = requests.get(url, headers=HEADERS, timeout=HTTP_TIMEOUT)
+            if r.status_code in (429, 500, 502, 503, 504):
+                time.sleep(backoff); backoff = min(backoff*2, 16); continue
+            r.raise_for_status()
+            j = r.json()
+            return (j.get("pairs") or [None])[0] or None
+        except Exception:
+            time.sleep(backoff); backoff = min(backoff*2, 16)
+    return None
+
+def extract_m5(p: Dict[str, Any]) -> Optional[float]:
     try:
-        url = DEX_PAIRS_URL.format(pair=pair)
-        r = requests.get(url, headers=HEADERS, timeout=HTTP_TIMEOUT)
-        r.raise_for_status()
-        j = r.json()
-        p = (j.get("pairs") or [None])[0] or None
-        return p
+        vol = (p.get("volume") or {}) if p else {}
+        v = vol.get("m5")
+        return float(v) if v is not None else None
     except Exception:
         return None
-
-def extract_volumes(p: Dict[str, Any]) -> Dict[str, Optional[float]]:
-    vol = (p.get("volume") or {}) if p else {}
-    def _f(x):
-        try:
-            return float(x) if x is not None else None
-        except Exception:
-            return None
-    h1  = _f(vol.get("h1"))
-    h6  = _f(vol.get("h6"))
-    h24 = _f(vol.get("h24"))
-    m5  = _f(vol.get("m5"))  # può non essere presente su alcune pair
-    if h1 is None:
-        if h6 is not None:
-            h1 = h6 / 6.0
-        elif h24 is not None:
-            h1 = h24 / 24.0
-    return {"m5": m5, "h1": h1, "h6": h6, "h24": h24}
 
 # ---------- State (m5 rolling buffer) ---------- #
 
@@ -181,28 +164,35 @@ def load_prev_state(path: Path) -> Optional[Dict[str, Any]]:
     except Exception:
         return None
 
-def save_state(path: Path, data: Dict[str, Any]):
+def atomic_write(path: Path, content: str):
     ensure_dir(str(path.parent))
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(content, encoding="utf-8")
+    tmp.replace(path)
+
+def save_state(path: Path, data: Dict[str, Any]):
     try:
-        path.write_text(json.dumps(data), encoding="utf-8")
+        atomic_write(path, json.dumps(data, ensure_ascii=False))
     except Exception:
         pass
 
 def trim_history(hist: List[Dict[str, Any]], now_ts: int) -> List[Dict[str, Any]]:
-    out = []
+    # dedup per ts (last-wins) + retention
+    uniq: Dict[int, float] = {}
     for it in hist or []:
         try:
             ts = int(it.get("ts", 0))
             v = float(it.get("vol_m5"))
             if v >= 0 and now_ts - ts <= RETENTION_SEC:
-                out.append({"ts": ts, "vol_m5": v})
+                uniq[ts] = v
         except Exception:
             continue
-    out.sort(key=lambda x: x["ts"])
-    return out
+    items = [{"ts": ts, "vol_m5": v} for ts, v in uniq.items()]
+    items.sort(key=lambda x: x["ts"])
+    return items
 
 def sum_window(hist: List[Dict[str, Any]], start_ts: int, end_ts: int) -> Optional[float]:
-    """Somma i campioni m5 con timestamp in (start_ts, end_ts]. (half-open per evitare doppio conteggio)"""
+    """Somma i campioni m5 in (start_ts, end_ts]."""
     if start_ts >= end_ts:
         return 0.0
     vals = [h["vol_m5"] for h in hist if start_ts < h["ts"] <= end_ts]
@@ -211,75 +201,97 @@ def sum_window(hist: List[Dict[str, Any]], start_ts: int, end_ts: int) -> Option
     return float(sum(vals))
 
 def count_window(hist: List[Dict[str, Any]], start_ts: int, end_ts: int) -> int:
-    """Conta campioni m5 in (start_ts, end_ts]."""
     return sum(1 for h in hist if start_ts < h["ts"] <= end_ts)
 
-def calc_vol30m_from_m5(prev_hist: List[Dict[str, Any]], now_ts: int, vol_m5: Optional[float]):
+def calc_h1_from_m5(prev_hist: List[Dict[str, Any]], now_ts: int, vol_m5: Optional[float],
+                    min_cov: int = 10):
     """
-    Aggiorna la history con il campione corrente e calcola:
-    - vol30_now: somma m5 negli ultimi 30 minuti
-    - vol30_prev: somma m5 nei 30 minuti precedenti
-    - cov_count: n° campioni negli ultimi 30' (copertura)
+    Aggiorna history con il campione corrente (bucket 5m) e calcola:
+    - h1_now: somma m5 negli ultimi 60' (12 bucket)
+    - h1_prev: somma m5 nei 60' precedenti
+    - cov_now, cov_prev: n° campioni nelle finestre
+    Applica un requisito di copertura minima (default 10/12).
     """
     hist = trim_history(prev_hist or [], now_ts)
+
+    # append/aggiorna campione corrente (dedup per ts)
     if vol_m5 is not None:
-        hist.append({"ts": now_ts, "vol_m5": float(vol_m5)})
+        if not hist or hist[-1]["ts"] != now_ts:
+            hist.append({"ts": now_ts, "vol_m5": float(vol_m5)})
+        else:
+            hist[-1]["vol_m5"] = float(vol_m5)
 
-    start_now = now_ts - WIN_30M_SEC
-    end_now   = now_ts
-    start_prev = now_ts - 2*WIN_30M_SEC
-    end_prev   = now_ts - WIN_30M_SEC
+    start_now  = now_ts - WIN_1H_SEC
+    end_now    = now_ts
+    start_prev = now_ts - 2 * WIN_1H_SEC
+    end_prev   = now_ts - WIN_1H_SEC
 
-    vol30_now  = sum_window(hist, start_now, end_now)
-    vol30_prev = sum_window(hist, start_prev, end_prev)
-    cov_count  = count_window(hist, start_now, end_now)  # 6 = copertura piena
+    h1_now  = sum_window(hist, start_now, end_now)
+    h1_prev = sum_window(hist, start_prev, end_prev)
+    cov_now  = count_window(hist, start_now, end_now)
+    cov_prev = count_window(hist, start_prev, end_prev)
 
-    return hist, vol30_now, vol30_prev, cov_count
+    # Copertura minima
+    if cov_now < min_cov or cov_prev < min_cov:
+        h1_now, h1_prev = None, None
 
-# ---------- Message (tabellare unico) ---------- #
+    return hist, h1_now, h1_prev, cov_now, cov_prev
 
-def build_table_message(rows: List[Dict[str, Any]]) -> str:
+# ---------- Message (solo trigger) ---------- #
+
+def format_money(x: Optional[float]) -> str:
+    if x is None:
+        return "n.d."
+    try:
+        return f"{int(round(float(x))):,}$".replace(",", ".")
+    except Exception:
+        return "n.d."
+
+def build_spike_message(spikes: List[Dict[str, Any]], threshold_x: float) -> str:
     """
-    rows: list di dict con chiavi:
-      symbol, name, pair, vol_h1, vol30m, vol30m_prev, delta30_pct
+    spikes: list con chiavi:
+      symbol, name, pair, h1_now, h1_prev, ratio, delta_pct
     """
-    # Ordina per Δ% decrescente (None va in coda)
-    rows.sort(key=lambda r: (r.get("delta30_pct") if r.get("delta30_pct") is not None else -1e18), reverse=True)
-
     header = []
-    header.append("⏱️ <b>VOLUME WATCH</b> — Vol(30m) esatto • Δ% ultimi 30’ vs 30’ precedenti")
+    header.append(f"🚨 <b>VOLUME SPIKE</b> — 1h ≥ {threshold_x:g}× della 1h precedente")
     header.append(f"<i>Aggiornato:</i> {htmlesc(now_iso_local())}\n")
 
-    # Tabella compatta: #, SYMBOL, Now30m, Δ%
-    pre = []
-    pre.append(f"{'#':>2}  {'SYMBOL':8} {'Now30m':>12} {'Δ%':>9}")
-    pre.append("-"*40)
-    for i, r in enumerate(rows, start=1):
-        now30 = r.get("vol30m")
-        vol1h = r.get("vol_h1")
-        now30_s = (
-            format_usd_int(now30) if now30 is not None
-            else ("~" + format_usd_int((vol1h or 0)/2.0) if vol1h is not None else "n.d.")
-        )
-        dpct_s = format_pct_signed(r.get("delta30_pct")) if now30 is not None else "n.d."
-        sym = (r.get("symbol") or "")[:8]
-        pre.append(f"{i:>2}. {sym:<8} {now30_s:>12} {dpct_s:>9}")
+    parts = ["\n".join(header)]
 
-    parts = []
-    parts.append("\n".join(header))
-    parts.append("<pre>" + "\n".join(pre) + "</pre>")
-    # Nessun blocco dettagli, niente "Copertura", niente riga "Vol30m ora:"
-    return "\n\n".join(parts)
+    for r in spikes:
+        sym  = htmlesc(r.get("symbol") or "")
+        name = htmlesc(r.get("name") or "")
+        pair = (r.get("pair") or "").lower()
+        link = f"https://dexscreener.com/{CHAIN_SLUG}/{pair}"
+        h1n  = format_money(r.get("h1_now"))
+        h1p  = format_money(r.get("h1_prev"))
+        ratio = r.get("ratio")
+        delta = r.get("delta_pct")
+        ratio_s = f"{ratio:.2f}×" if ratio is not None else "n.d."
+        delta_s = f"+{delta:.2f}%" if (delta is not None and delta >= 0) else (f"{delta:.2f}%" if delta is not None else "n.d.")
+
+        block = []
+        block.append(f"• <b>{sym}</b> — {name}")
+        block.append(f"Pair: <code>{htmlesc(pair)}</code>")
+        block.append(f'DexScreener: <a href="{link}">{htmlesc(link)}</a>')
+        block.append(f"Vol 1h: {h1n}  |  Prev 1h: {h1p}")
+        block.append(f"Ratio: <b>{ratio_s}</b>  |  Δ: {delta_s}")
+        parts.append("\n".join(block) + "\n")
+
+    return "\n".join(parts).strip()
 
 # ---------- Main ---------- #
 
 def main():
-    ap = argparse.ArgumentParser(description="Volume watcher — Vol(30m) esatto da m5 + Δ% vs 30’ precedenti (tabellare)")
+    ap = argparse.ArgumentParser(
+        description="Volume watcher — Spike 1h vs 1h precedente (trigger ≥ X), messaggio HTML con solo i trigger."
+    )
     ap.add_argument("--mode", choices=["from-screener", "from-file"], default="from-screener",
                     help="Origine lista pair: 'from-screener' rilancia test4.py, 'from-file' legge JSON")
     ap.add_argument("--pairs-file", type=str, default="state/top_pairs.json",
                     help="File JSON con [{'symbol','name','pair'}...]")
-    # Parametri per test4.py quando mode=from-screener
+
+    # Parametri per test4.py (mode=from-screener)
     ap.add_argument("--python-bin", default=sys.executable)
     ap.add_argument("--min-liq", type=int, default=200000)
     ap.add_argument("--workers", type=int, default=12)
@@ -289,12 +301,16 @@ def main():
     ap.add_argument("--rps-ds", type=float, default=2.0)
     ap.add_argument("--funnel-show", type=int, default=100)
     ap.add_argument("--skip-unchanged-days", type=int, default=0)
+
+    # Trigger & copertura
+    ap.add_argument("--threshold-x", type=float, default=10.0, help="Soglia X per il trigger (Vol1h ≥ X × Vol1h_prev)")
+    ap.add_argument("--min-cov", type=int, default=10, help="Copertura minima (campioni m5) per ciascuna 1h [0..12]")
+
     # Invio Telegram
-    ap.add_argument("--send-telegram", action="store_true", help="Se presente, invia il messaggio a Telegram (singolo)")
-    ap.add_argument("--tg-parse-mode", default="HTML",
-                    choices=["HTML", "MarkdownV2", "Markdown"], help="Parse mode Telegram")
+    ap.add_argument("--send-telegram", action="store_true", help="Se presente, invia il messaggio a Telegram se ci sono trigger")
     ap.add_argument("--tg-token", default=None, help="Override TG_BOT_TOKEN (altrimenti legge da env)")
     ap.add_argument("--tg-chat", default=None, help="Override TG_CHAT_ID (altrimenti legge da env)")
+
     args = ap.parse_args()
 
     # 1) Carica lista pair
@@ -322,7 +338,7 @@ def main():
             pairs = parse_top_only(stdout)
             # Salva la lista TOP per fallback
             ensure_dir("state")
-            Path("state/top_pairs.json").write_text(json.dumps(pairs, ensure_ascii=False), encoding="utf-8")
+            atomic_write(Path("state/top_pairs.json"), json.dumps(pairs, ensure_ascii=False))
         except subprocess.CalledProcessError as e:
             print("ERROR: test4.py failed", file=sys.stderr)
             try:
@@ -340,67 +356,72 @@ def main():
     if not pairs:
         msg = "⚠️ Nessuna pair TOP da monitorare."
         ensure_dir("state/telegram")
-        Path("state/telegram/msg_volwatch.html").write_text(msg, encoding="utf-8")
+        atomic_write(Path("state/telegram/msg_volwatch.html"), msg)
         print(msg)
         return
 
-    # 2) Per-pair: fetch, calcola Vol(30m) da m5, Δ% vs prev, salva stato
-    rows: List[Dict[str, Any]] = []
+    # 2) Per-pair: fetch, aggiorna stato m5, calcola h1 vs h1_prev e filtra trigger
+    spikes: List[Dict[str, Any]] = []
     state_dir = Path("state/volwatch")
     ensure_dir(str(state_dir))
+
+    # ancora il timestamp al bucket 5m
     now_ts = int(time.time())
+    now_ts = (now_ts // BUCKET_SEC) * BUCKET_SEC
 
     for pinfo in pairs:
-        sym = pinfo["symbol"]; name = pinfo["name"]; pair = pinfo["pair"]
+        sym = pinfo["symbol"]; name = pinfo["name"]; pair = (pinfo["pair"] or "").lower()
         data = fetch_pair(pair) or {}
-        vols = extract_volumes(data)
-        vol_h1 = vols.get("h1")
-        vol_m5 = vols.get("m5")
+        vol_m5 = extract_m5(data)
 
         state_path = state_dir / f"{pair}.json"
         prev = load_prev_state(state_path) or {}
         prev_hist = prev.get("m5_history") or []
 
-        hist, vol30_now, vol30_prev, cov_count = calc_vol30m_from_m5(prev_hist, now_ts, vol_m5)
+        hist, h1_now, h1_prev, cov_now, cov_prev = calc_h1_from_m5(prev_hist, now_ts, vol_m5, min_cov=args.min_cov)
 
-        delta30_pct = None
-        if vol30_now is not None and vol30_prev is not None:
-            try:
-                delta_abs = float(vol30_now) - float(vol30_prev)
-                if vol30_prev != 0:
-                    delta30_pct = (delta_abs / float(vol30_prev)) * 100.0
-            except Exception:
-                delta30_pct = None
+        # salva nuovo stato
+        save_state(state_path, {"ts": now_ts, "m5_history": hist})
 
-        save_state(state_path, {
-            "ts": now_ts, "vol_h1": vol_h1, "m5_history": hist,
-        })
+        # trigger (richiede copertura)
+        if h1_now is not None and h1_prev is not None and h1_prev > 0:
+            ratio = float(h1_now) / float(h1_prev)
+            if ratio >= float(args.threshold_x):
+                delta_pct = (float(h1_now) - float(h1_prev)) / float(h1_prev) * 100.0
+                spikes.append({
+                    "symbol": sym,
+                    "name": name,
+                    "pair": pair,
+                    "h1_now": h1_now,
+                    "h1_prev": h1_prev,
+                    "ratio": ratio,
+                    "delta_pct": delta_pct,
+                    "cov_now": cov_now,
+                    "cov_prev": cov_prev,
+                })
 
-        rows.append({
-            "symbol": sym,
-            "name": name,
-            "pair": pair,
-            "vol_h1": vol_h1,
-            "vol30m": vol30_now,        # ultimi 30'
-            "vol30m_prev": vol30_prev,  # 30' precedenti
-            "delta30_pct": delta30_pct, # differenza in %
-        })
+    # Ordina per ratio decrescente
+    spikes.sort(key=lambda r: r.get("ratio", 0.0), reverse=True)
 
-    # 3) Costruisci messaggio HTML tabellare e salva
+    # 3) Costruisci messaggio HTML e salva
     ensure_dir("state/telegram")
-    html = build_table_message(rows)
-    out_path = Path("state/telegram/msg_volwatch.html")
-    out_path.write_text(html, encoding="utf-8")
-    print(f"OK: scritto {out_path} ({len(html)} chars)")
+    if spikes:
+        html = build_spike_message(spikes, threshold_x=args.threshold_x)
+    else:
+        html = f"ℹ️ Nessun spike ≥ {args.threshold_x:g}× (Vol 1h vs 1h precedente). Aggiornato: {htmlesc(now_iso_local())}"
 
-    # 4) Invio Telegram (opzionale, singolo)
-    if args.send_telegram:
+    out_path = Path("state/telegram/msg_volwatch.html")
+    atomic_write(out_path, html)
+    print(f"OK: scritto {out_path} ({len(html)} chars) — triggers: {len(spikes)}")
+
+    # 4) Invio Telegram solo se ci sono trigger
+    if args.send_telegram and spikes:
         token = args.tg_token or os.environ.get("TG_BOT_TOKEN", "")
         chat  = args.tg_chat  or os.environ.get("TG_CHAT_ID", "")
         if not token or not chat:
             print("Telegram disabled: TG_BOT_TOKEN/TG_CHAT_ID mancanti.", file=sys.stderr)
         else:
-            ok = send_telegram_single(html, token, chat, parse_mode=args.tg_parse_mode)
+            ok = send_telegram_single(html, token, chat, parse_mode="HTML")
             print(f"Telegram send: {'OK' if ok else 'FAIL'}")
 
 if __name__ == "__main__":
