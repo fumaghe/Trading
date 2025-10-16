@@ -1,17 +1,42 @@
 pair: 0x126fadb82cc4ab91e6cd03accaf209fb6d1ffaab
 chain: bsc
 model: lgb
-n_train: 2126
+n_train: 2137
 n_val: 576
-val_mae_ret: 1.65175156e-02
-val_rmse_ret: 2.35283335e-02
-val_smape_ret%: 146.732029
-val_mae_price: 0.00064853
-val_rmse_price: 0.00091396
-val_mape_price%: 1.651361
-relax: 15.0
+val_mae_ret: 1.71536133e-02
+val_rmse_ret: 2.42502299e-02
+val_smape_ret%: 151.966849
+val_diracc%: 50.0000
+val_mae_price: 0.00067109
+val_rmse_price: 0.00093257
+val_mape_price%: 1.717098
+relax: 12.0
 no_quote_filter: True
 count_sim: 1500
 top_k_exo: 150
-sim_pools_used: 0x91e4b339d9add120f12e3884e007d8713cd5b70f,0x916f992df86795f24de6c268cfb9031fbb1155da,0xa325b22090aa2d5528b01cc6974699da4b9cc875,0x6531a0190c9977e48b3a5c8bc5226a6cd821d18c,0x90166b5795250fe7f0831e844121cc91799787e9,0xafecdd2fc04f0939d7b6835529677608470c063d,0xd317b5480faf6ef228c502d9c4d0c04599c5b74b,0x809ef7f598673413cb7cb0a3344ebdd1e32a05d6,0x8148751664e9a31ead5a0c70bef6ed70ea74d5b8,0x74554ee9578654e1446e47acc97b8eac08f1bfe4
-generated_utc: 2025-10-14T08:40:37.601824Z
+exo_kind: weighted_corr
+exo_alpha: 0.8  exo_decay: 0.992
+damp_base: 0.996  vol_target: 0.025
+clip_ret: 0.25  drift_cap_24h: 3.5
+top_features:
+  - ret_std3: 1109
+  - exo_lag72: 1089
+  - vol_lag144: 1065
+  - ret_lag144: 1026
+  - vol_lag36: 970
+  - ret_lag24: 928
+  - vol_lag6: 907
+  - ret_sma36: 890
+  - vol_lag24: 866
+  - exo_lag12: 856
+  - ret_lag1: 847
+  - sin_day: 844
+  - ret_sma3: 813
+  - ret_lag2: 810
+  - ret_lag12: 808
+  - cos_day: 805
+  - vol_lag72: 799
+  - ret_lag36: 798
+  - exo_lag24: 798
+  - exo_lag36: 785
+generated_utc: 2025-10-14T08:37:08.033227Z

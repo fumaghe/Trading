@@ -1,25 +1,9 @@
 #!/usr/bin/env python3
-# predici.py
-# Unico script: discovery pool simili + OHLCV 5m + forecasting 24h/5m + chart
-# Uso rapido:
-#   python predici.py 0xPOOLADDRESS
-# Output:
-#   data/predictions/<chain>/POOL_<xxxxxx>/forecast_5m_<YYYYMMDD_%H%M>.csv
-#   data/predictions/<chain>/POOL_<xxxxxx>/model_card.txt
-#   data/pools_list.csv
-#
-# Requisiti:
-#   pip install requests pandas numpy
-#   (opzionali) pip install lightgbm xgboost scikit-learn
+# predici.py (enhanced)
+# Discovery pool simili + OHLCV 5m + forecasting 24h/5m + chart
+# Modifiche chiave: exogenous pesati (corr), componente live nel futuro, bande ~√h,
+# damping regime-aware, gap-safe exo, trend features, guardrail parametrizzabili, DA%.
 
-"""
-Esempio:
-python predici.py 0x03615af9bb8f983eb906b2017edd5701aea10c15 --chain bsc --days 90 --count_sim 1500 --top_k_exo 40 --relax 6.0 --allow_any_dex --no_quote_filter --dedup_base_off --min_liq 2000 --min_mcap 100000 --min_vol24 2000 --min_tx24 10 --min_age_days 0.1
-
-
-python predici.py 0x03615af9bb8f983eb906b2017edd5701aea10c15 --chain bsc --days 90 --count_sim 1500 --top_k_exo 150 --relax 15.0 --allow_any_dex --no_quote_filter --dedup_base_off --min_liq 0 --min_mcap 0 --min_vol24 0 --min_tx24 0 --min_age_days 0 --max_age_days 5000 --explain --diag
-
-"""
 import os, sys, time, json, math, argparse, hashlib, sqlite3, traceback, warnings
 from typing import Any, Dict, List, Optional, Tuple
 from datetime import datetime, timezone
@@ -31,23 +15,21 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
-# ---- clamp returns per stabilità ----
-CLIP_RET = 0.20          # max ±20% per step (5m) dopo la fase iniziale
-RET_WINSOR_LO = 0.003    # winsorization: 0.3° percentile (usato nella vecchia versione)
-RET_WINSOR_HI = 0.997    # winsorization: 99.7° percentile
-
-# =================== Costanti e default ===================
+# =================== Costanti e default (parametrizzabili) ===================
 DEX_API = "https://api.dexscreener.com"
 GT_API  = "https://api.geckoterminal.com/api/v2"
 
 DEFAULT_HEADERS = {
     "accept": "application/json",
-    "user-agent": "dex-forecaster/3.0 (+cli)",
+    "user-agent": "dex-forecaster/4.0 (+cli)",
     "accept-language": "en-US,en;q=0.9",
 }
 
 NETWORK = "bsc"  # default rete
-DRIFT_CAP_24H = 3.0  # cap sulla deriva cumulata in log-return nelle 24h (e^-3..e^3 ~ 0.05x..20x)
+
+# Guardrail (sovrascrivibili da CLI)
+CLIP_RET = 0.20        # max ±20% per step (5m)
+DRIFT_CAP_24H = 3.0     # cap deriva cumulata 24h in log-return (e^-3..e^3 ≈ 0.05x..20x)
 
 # Quote tokens comuni su BSC
 WBNB = "0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c".lower()
@@ -61,27 +43,12 @@ DEFAULT_PCS_DEX_IDS = (
     "pancakeswapv3","pancakeswap-v3"
 )
 
-# --- Soglie di default per i filtri adattivi (overridable da CLI) ---
-DEFAULT_FLOORS = {
-    "liq": 2e4,        # 20k USD
-    "mcap": 1e6,       # 1M USD
-    "vol24": 1e4,      # 10k USD
-    "tx24": 50,        # 50 tx
-    "age_days": 0.5,   # 12h
-}
-DEFAULT_CAPS = {
-    "liq": 1e9,
-    "mcap": 1e10,
-    "vol24": 5e8,
-    "tx24": 2_000_000,
-    "age_days": 720.0,
-}
+# Filtri adattivi
+DEFAULT_FLOORS = { "liq": 2e4, "mcap": 1e6, "vol24": 1e4, "tx24": 50, "age_days": 0.5 }
+DEFAULT_CAPS   = { "liq": 1e9, "mcap": 1e10, "vol24": 5e8, "tx24": 2_000_000, "age_days": 720.0 }
 
 # Rate limit per host
-HOST_MIN_INTERVAL = {
-    "api.dexscreener.com": 0.15,
-    "api.geckoterminal.com": 2.2,
-}
+HOST_MIN_INTERVAL = { "api.dexscreener.com": 0.15, "api.geckoterminal.com": 2.2 }
 _last_call_ts: Dict[str, float] = {}
 
 # ML backend: LightGBM → XGBoost → RandomForest
@@ -118,7 +85,6 @@ def cache_get(url: str, params: Optional[Dict[str, Any]] = None,
     key = hashlib.sha256((url + json.dumps(params or {}, sort_keys=True)).encode()).hexdigest()
     path = os.path.join(cache_dir, key + ".json")
 
-    # Cache hit
     if os.path.exists(path) and (time.time() - os.path.getmtime(path) < ttl):
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -172,7 +138,7 @@ def _age_days_from_ms(created_at):
         v = int(created_at)
     except Exception:
         return None
-    if v < 10**12: v *= 1000  # convert s→ms se serve
+    if v < 10**12: v *= 1000
     now_ms = int(time.time() * 1000)
     return (now_ms - v) / (1000 * 60 * 60 * 24)
 
@@ -255,24 +221,20 @@ def _band(val, low_mult, high_mult, low_floor, high_cap):
     val = max(val, 1e-12)
     lo = max(val * low_mult, low_floor)
     hi = min(val * high_mult, high_cap)
-    if lo > hi:
-        lo, hi = hi * 0.5, hi
+    if lo > hi: lo, hi = hi * 0.5, hi
     return lo, hi
 
-def adaptive_filters(
-    tgt: Dict[str, Any],
-    relax: float,
-    floors: Optional[Dict[str, float]] = None,
-    caps: Optional[Dict[str, float]] = None,
-) -> Dict[str, float]:
+def adaptive_filters(tgt: Dict[str, Any], relax: float,
+                     floors: Optional[Dict[str, float]] = None,
+                     caps: Optional[Dict[str, float]] = None) -> Dict[str, float]:
     floors = floors or DEFAULT_FLOORS
     caps   = caps   or DEFAULT_CAPS
 
     liq = max(_liq_usd(tgt), 1.0)
     mcap = max(_mcap_or_fdv(tgt), 1.0)
-    vol = max(_vol_h24(tgt), 1.0)
-    tx  = max(_txns_h24(tgt), 1)
-    age = _age_days_from_ms(tgt.get("pairCreatedAt")) or 7.0
+    vol  = max(_vol_h24(tgt), 1.0)
+    tx   = max(_txns_h24(tgt), 1)
+    age  = _age_days_from_ms(tgt.get("pairCreatedAt")) or 7.0
 
     liq_min, liq_max = _band(liq, 0.1/relax, 8.0*relax, floors["liq"],  caps["liq"])
     mcap_min,mcap_max= _band(mcap,0.1/relax, 8.0*relax, floors["mcap"], caps["mcap"])
@@ -292,38 +254,30 @@ def filter_reasons(p: Dict[str, Any], f: Dict[str, float],
                    quote_mode: str, quote_single: Optional[str], quote_allow: "set[str]",
                    allowed_dex: Optional[set]) -> Dict[str, int]:
     fails: Dict[str, int] = {}
-
     if allowed_dex is not None:
         d = (p.get("dexId") or "").lower()
-        if d not in allowed_dex:
-            fails["dex_not_allowed"] = 1
+        if d not in allowed_dex: fails["dex_not_allowed"] = 1
 
     if quote_mode != "off":
         q = _quote_addr_of(p)
         if quote_mode == "single":
-            if quote_single and q != quote_single:
-                fails["quote!=selected"] = 1
+            if quote_single and q != quote_single: fails["quote!=selected"] = 1
         elif quote_mode == "allow":
-            if q not in quote_allow:
-                fails["quote_not_in_allow"] = 1
+            if q not in quote_allow: fails["quote_not_in_allow"] = 1
 
     if _price_usd(p) <= 0: fails["price<=0"] = 1
 
     liq = _liq_usd(p)
     if not (f["liquidity_min"] <= liq <= f["liquidity_max"]): fails["liq_range"] = 1
-
     mcap = _mcap_or_fdv(p)
     if not (f["mcap_min"] <= mcap <= f["mcap_max"]): fails["mcap_range"] = 1
-
     vol24 = _vol_h24(p)
     if not (f["vol24_min"] <= vol24 <= f["vol24_max"]): fails["vol24_range"] = 1
-
     tx24 = _txns_h24(p)
     if not (f["tx24_min"] <= tx24 <= f["tx24_max"]): fails["tx24_range"] = 1
 
     age = _age_days_from_ms(p.get("pairCreatedAt"))
     if age is None or not (f["age_days_min"] <= age <= f["age_days_max"]): fails["age_range"] = 1
-
     return fails
 
 def hydrate_if_needed(p: Dict[str, Any], chain: str) -> Dict[str, Any]:
@@ -350,72 +304,47 @@ def discover_candidates(chain: str, target: Dict[str, Any],
                         anchors: Optional[List[str]], source_mode: str) -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
 
-    # 1) coppie del base e del quote del target
     base = (target.get("baseToken") or {}).get("address") or ""
     quote = (target.get("quoteToken") or {}).get("address") or ""
     for tok in [base, quote]:
         if tok:
-            try:
-                out.extend(ds_token_pairs(chain, tok))
-            except Exception:
-                pass
+            try: out.extend(ds_token_pairs(chain, tok))
+            except Exception: pass
 
-    # 2) anchor quote tokens
     anchors_use = [a.lower() for a in (anchors or DEFAULT_ANCHORS)]
     for a in anchors_use:
-        try:
-            out.extend(ds_token_pairs(chain, a))
-        except Exception:
-            pass
+        try: out.extend(ds_token_pairs(chain, a))
+        except Exception: pass
 
-    # 3) dexIds (PCS v2+v3 by default)
     if source_mode in ("both","dex-only") and dex_ids:
-        try:
-            out.extend(ds_pairs_by_dex(chain, dex_ids))
-        except Exception:
-            pass
+        try: out.extend(ds_pairs_by_dex(chain, dex_ids))
+        except Exception: pass
 
     return out
 
-def select_similar(
-    chain: str,
-    target_pair_addr: str,
-    count: int,
-    relax: float,
-    dex_ids: Optional[List[str]],
-    allow_any_dex: bool,
-    quotes_allow: Optional[List[str]],
-    no_quote_filter: bool,
-    anchors: Optional[List[str]],
-    source_mode: str,
-    dedup_base: bool,
-    explain: bool,
-    diag: bool,
-    floors: Optional[Dict[str, float]] = None,
-    caps: Optional[Dict[str, float]] = None,
-) -> pd.DataFrame:
+def select_similar(chain: str, target_pair_addr: str, count: int, relax: float,
+                   dex_ids: Optional[List[str]], allow_any_dex: bool,
+                   quotes_allow: Optional[List[str]], no_quote_filter: bool,
+                   anchors: Optional[List[str]], source_mode: str,
+                   dedup_base: bool, explain: bool, diag: bool,
+                   floors: Optional[Dict[str, float]] = None,
+                   caps: Optional[Dict[str, float]] = None) -> pd.DataFrame:
 
     tgt = ds_get_pair(chain, target_pair_addr)
     filters = adaptive_filters(tgt, relax=relax, floors=floors, caps=caps)
 
-    # quote filter mode
     if no_quote_filter:
         quote_mode, quote_single, quote_allow = "off", None, set()
     elif quotes_allow:
         quote_mode, quote_single, quote_allow = "allow", None, set(a.lower() for a in quotes_allow)
     else:
-        # usa quote del target
         quote_mode, quote_single, quote_allow = "single", (_quote_addr_of(tgt) or "").lower(), set()
 
-    # dex filter
     allowed_dex = None if allow_any_dex else set([d.lower() for d in (dex_ids or list(DEFAULT_PCS_DEX_IDS))])
 
-    # discovery
     cands_raw = discover_candidates(chain, tgt, dex_ids, anchors, source_mode)
 
-    # dedup + hydrate
-    seen = set()
-    cands: List[Dict[str, Any]] = []
+    seen = set(); cands: List[Dict[str, Any]] = []
     for p in cands_raw:
         addr = (p.get("pairAddress") or "").lower()
         if not addr or addr in seen or addr == target_pair_addr.lower():
@@ -423,9 +352,7 @@ def select_similar(
         seen.add(addr)
         cands.append(hydrate_if_needed(p, chain))
 
-    if explain:
-        print(f"[debug] candidati (dedup): {len(cands)}")
-
+    if explain: print(f"[debug] candidati (dedup): {len(cands)}")
     if diag and cands:
         from collections import Counter
         dex_ct = Counter([(p.get("dexId") or "").lower() for p in cands]).most_common(8)
@@ -433,14 +360,11 @@ def select_similar(
         print("[diag] top dex:", dex_ct)
         print("[diag] top quote token:", quotes_ct)
 
-    rows: List[Dict[str, Any]] = []
-    reasons: Dict[str, int] = {}
-
+    rows: List[Dict[str, Any]] = []; reasons: Dict[str, int] = {}
     for p in cands:
         fails = filter_reasons(p, filters, quote_mode, quote_single, quote_allow, allowed_dex)
         if not fails:
-            base = p.get("baseToken") or {}
-            quote = p.get("quoteToken") or {}
+            base = p.get("baseToken") or {}; quote = p.get("quoteToken") or {}
             rec = {
                 "pairAddress": (p.get("pairAddress") or "").lower(),
                 "dexId": p.get("dexId"),
@@ -460,8 +384,7 @@ def select_similar(
             rows.append(rec)
         else:
             if explain:
-                for k in fails:
-                    reasons[k] = reasons.get(k, 0) + 1
+                for k in fails: reasons[k] = reasons.get(k, 0) + 1
 
     if not rows:
         if explain and reasons:
@@ -471,7 +394,6 @@ def select_similar(
             print("[hint] Prova ad aumentare --relax, usare --no_quote_filter oppure --allow_any_dex.")
         raise ValueError("Nessun candidato ha passato i filtri.")
 
-    # dedup per base token (facoltativo)
     if dedup_base:
         rows = sorted(rows, key=lambda r: (r["score"], -r["liquidity_usd"]))
         best_by_base: Dict[str, Dict[str, Any]] = {}
@@ -502,16 +424,13 @@ def save_parquet_or_csv(df: pd.DataFrame, out_path: str) -> Optional[str]:
     engine = detect_parquet_engine()
     try:
         if engine:
-            df.to_parquet(out_path, index=False, engine=engine)
-            return out_path
+            df.to_parquet(out_path, index=False, engine=engine); return out_path
         out_csv = out_path.replace(".parquet", ".csv.gz")
-        df.to_csv(out_csv, index=False, compression="gzip")
-        return out_csv
+        df.to_csv(out_csv, index=False, compression="gzip"); return out_csv
     except Exception:
         try:
             out_csv = out_path.replace(".parquet", ".csv")
-            df.to_csv(out_csv, index=False)
-            return out_csv
+            df.to_csv(out_csv, index=False); return out_csv
         except Exception:
             return None
 
@@ -527,17 +446,14 @@ def gt_fetch_ohlcv_5m(pool: str, network: str, days: int,
 
     while True:
         params = {
-            "aggregate": agg,
-            "limit": 1000,
-            "currency": "usd",
+            "aggregate": agg, "limit": 1000, "currency": "usd",
             "include_empty_intervals": str(include_empty).lower()
         }
         if before: params["before_timestamp"] = before
         try:
             data = cache_get(url, params=params, cache_dir=cache_dir, ttl=60, retries=6, timeout=40)
         except Exception as e:
-            print(f"[warn] GeckoTerminal fetch fallito su {pool} (before={before}): {e}")
-            break
+            print(f"[warn] GeckoTerminal fetch fallito su {pool} (before={before}): {e}"); break
         lst = ((data.get("data") or {}).get("attributes") or {}).get("ohlcv_list", [])
         if not lst: break
         lst_sorted = sorted(lst, key=lambda x: x[0])
@@ -549,22 +465,18 @@ def gt_fetch_ohlcv_5m(pool: str, network: str, days: int,
             except Exception:
                 continue
         before = int(lst_sorted[0][0]) - 1
-        if before < start or len(out) >= guard_max_rows:
-            break
+        if before < start or len(out) >= guard_max_rows: break
 
     if not out:
         return pd.DataFrame(columns=["ts","open","high","low","close","volume"])
 
     df = (pd.DataFrame(out, columns=["ts","open","high","low","close","volume"])
-            .drop_duplicates("ts")
-            .sort_values("ts"))
+          .drop_duplicates("ts").sort_values("ts"))
     df = df[(df["close"] > 0) & (df["high"] >= df["low"])]
     return df
 
 def append_sqlite(df: pd.DataFrame, chain: str, pool: str, db_path: str):
-    if df is None or df.empty:
-        return
-
+    if df is None or df.empty: return
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     con = sqlite3.connect(db_path)
     try:
@@ -573,29 +485,21 @@ def append_sqlite(df: pd.DataFrame, chain: str, pool: str, db_path: str):
             chain  TEXT NOT NULL,
             pool   TEXT NOT NULL,
             ts     INTEGER NOT NULL,
-            open   REAL,
-            high   REAL,
-            low    REAL,
-            close  REAL,
-            volume REAL,
+            open   REAL, high REAL, low REAL, close REAL, volume REAL,
             PRIMARY KEY (chain, pool, ts)
-        )
-        """)
+        )""")
         con.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_candles ON candles(chain,pool,ts)")
 
         df2 = df.copy()
-        df2["chain"] = chain
-        df2["pool"]  = pool
+        df2["chain"] = chain; df2["pool"] = pool
         df2 = df2[["chain","pool","ts","open","high","low","close","volume"]]
         df2 = df2.drop_duplicates(subset=["chain","pool","ts"])
-
         rows = list(df2.itertuples(index=False, name=None))
         con.executemany("""
             INSERT OR IGNORE INTO candles
             (chain, pool, ts, open, high, low, close, volume)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """, rows)
-
         con.commit()
     finally:
         con.close()
@@ -614,7 +518,9 @@ def time_features(ts: pd.Series) -> pd.DataFrame:
         "dow": dt.dt.weekday,
     }, index=ts.index)
 
-def add_lags_rolls(df: pd.DataFrame, col="close", lag_list=(1,2,3,6,12,24,36,72,144), rolls=(3,12,36,144)):
+def add_lags_rolls(df: pd.DataFrame, col="close",
+                   lag_list=(1,2,3,6,12,24,36,72,144),
+                   rolls=(3,12,36,144)):
     out = df.copy()
     for L in lag_list:
         out[f"{col}_lag{L}"] = out[col].shift(L)
@@ -627,6 +533,12 @@ def add_lags_rolls(df: pd.DataFrame, col="close", lag_list=(1,2,3,6,12,24,36,72,
     for R in (3,12,36,144):
         out[f"ret_sma{R}"] = out["ret"].rolling(R).mean()
         out[f"ret_std{R}"] = out["ret"].rolling(R).std()
+
+    # Momentum/trend spreads (aiuta micro-risalite/ricadute)
+    out["sma3_minus_sma12"]   = out[f"{col}_sma3"]   - out[f"{col}_sma12"]
+    out["sma12_minus_sma36"]  = out[f"{col}_sma12"]  - out[f"{col}_sma36"]
+    out["sma36_minus_sma144"] = out[f"{col}_sma36"]  - out[f"{col}_sma144"]
+
     if "volume" in out.columns:
         for L in (1,2,3,6,12,24,36,72,144):
             out[f"vol_lag{L}"] = out["volume"].shift(L)
@@ -637,18 +549,67 @@ def add_lags_rolls(df: pd.DataFrame, col="close", lag_list=(1,2,3,6,12,24,36,72,
 
 def mae(y, yhat): return float(np.mean(np.abs(y - yhat)))
 def rmse(y, yhat): return float(np.sqrt(np.mean((y - yhat)**2)))
-
-def mape(y, yhat):
-    # ATTENZIONE: per i returns può esplodere. Usarlo solo in spazio prezzo.
-    return float(np.mean(np.abs((y - yhat) / np.clip(np.abs(y), 1e-8, None)))) * 100.0
-
+def mape(y, yhat): return float(np.mean(np.abs((y - yhat) / np.clip(np.abs(y), 1e-8, None)))) * 100.0
 def smape(y, yhat):
-    num = np.abs(y - yhat)
-    den = (np.abs(y) + np.abs(yhat)) / 2.0
+    num = np.abs(y - yhat); den = (np.abs(y) + np.abs(yhat)) / 2.0
     return float(np.mean(num / np.clip(den, 1e-8, None))) * 100.0
+def directional_acc(y, yhat):  # direzione returns
+    return float(np.mean(np.sign(y) == np.sign(yhat))) * 100.0
 
 # =================== Dataset target + exogenous ===================
-def fetch_target_and_exo(target_pair: str, chain: str, days: int, sim_df: pd.DataFrame, top_k_exo: int = 10) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series]:
+def _build_weighted_exogenous(df_tgt: pd.DataFrame, exo_series: List[pd.DataFrame]) -> Tuple[pd.DataFrame, str]:
+    """
+    Ritorna df_exo con colonna 'exo_ret' calcolata come media pesata per correlazione (positiva).
+    Fallback: mediana tra i simili.
+    """
+    tgt = df_tgt[["ts","close"]].drop_duplicates("ts").sort_values("ts").copy()
+    tgt["ret"] = np.log(tgt["close"]).diff()
+
+    if not exo_series:
+        return pd.DataFrame({"ts": tgt["ts"].values, "exo_ret": 0.0}), "zero"
+
+    df_exo = None
+    for s in exo_series:
+        if df_exo is None: df_exo = s.copy()
+        else: df_exo = pd.merge(df_exo, s, on="ts", how="outer")
+    df_exo = df_exo.sort_values("ts")
+
+    # Allineo su timeline target con ffill limitato e bfill iniziale
+    idx = tgt["ts"]
+    df_exo = df_exo.set_index("ts").reindex(idx)
+    df_exo = df_exo.bfill().ffill(limit=3)  # gap-safe: limita ffill a 3 step (~15m)
+    df_exo = df_exo.reset_index().rename(columns={"index":"ts"})
+
+    # Correlazioni con il target (solo positive), pesi normalizzati
+    M = df_exo.drop(columns=["ts"]).copy()
+    tgt_ret = tgt["ret"].values
+    w = []
+    cols = list(M.columns)
+    for c in cols:
+        x = M[c].values
+        mask = np.isfinite(x) & np.isfinite(tgt_ret)
+        if mask.sum() < 10:
+            w.append(0.0); continue
+        corr = np.corrcoef(tgt_ret[mask], x[mask])[0,1]
+        w.append(max(float(corr), 0.0))
+    w = np.array(w, dtype=float)
+    if np.sum(w) > 0:
+        w = w / np.sum(w)
+        exo = np.dot(M.fillna(0.0).values, w)
+        label = "weighted_corr"
+    else:
+        exo = M.median(axis=1, skipna=True).fillna(0.0).values
+        label = "median"
+
+    df_out = pd.DataFrame({"ts": idx.values, "exo_ret": exo})
+    # Reset su buchi lunghi (> 15m): se differenza timestamp > 900s → 0
+    ts = df_out["ts"].to_numpy()
+    gap = np.diff(ts, prepend=ts[0])
+    df_out.loc[gap > 900, "exo_ret"] = 0.0
+    return df_out, label
+
+def fetch_target_and_exo(target_pair: str, chain: str, days: int,
+                         sim_df: pd.DataFrame, top_k_exo: int = 10) -> Tuple[pd.DataFrame, pd.DataFrame, pd.Series, float, str]:
     df_tgt = gt_fetch_ohlcv_5m(target_pair, network=chain, days=days, include_empty=True)
     if df_tgt is None or df_tgt.empty:
         raise RuntimeError("Nessun OHLCV per il target.")
@@ -656,60 +617,46 @@ def fetch_target_and_exo(target_pair: str, chain: str, days: int, sim_df: pd.Dat
 
     exo_series = []
     for addr in (sim_df["pairAddress"].head(top_k_exo) if "pairAddress" in sim_df.columns else []):
-        if addr.lower() == target_pair.lower():
-            continue
+        if addr.lower() == target_pair.lower(): continue
         try:
             df = gt_fetch_ohlcv_5m(addr, network=chain, days=days, include_empty=True)
-            if df is None or df.empty:
-                continue
+            if df is None or df.empty: continue
             df = df[["ts","close"]].drop_duplicates("ts").sort_values("ts")
             df["ret"] = np.log(df["close"]).diff()
             exo_series.append(df[["ts","ret"]].rename(columns={"ret":f"r_{addr[:6]}"}))
         except Exception:
             continue
 
-    if not exo_series:
-        df_exo = pd.DataFrame({"ts": df_tgt["ts"].values, "exo_med_ret": 0.0})
-    else:
-        df_exo = None
-        for s in exo_series:
-            if df_exo is None: df_exo = s.copy()
-            else: df_exo = pd.merge(df_exo, s, on="ts", how="outer")
-        df_exo = df_exo.sort_values("ts")
-        df_exo = df_exo.set_index("ts").reindex(df_tgt["ts"]).ffill().bfill().reset_index().rename(columns={"index":"ts"})
-        df_exo["exo_med_ret"] = df_exo.drop(columns=["ts"]).median(axis=1, skipna=True).fillna(0.0)
-        df_exo = df_exo[["ts","exo_med_ret"]]
-
+    df_exo, exo_kind = _build_weighted_exogenous(df_tgt, exo_series)
+    # Stagionalità intraday sull'exo
     dt = pd.to_datetime(df_exo["ts"], unit="s", utc=True)
     mof = dt.dt.hour * 60 + dt.dt.minute
-    df_exo = df_exo.copy()
-    df_exo["mof"] = mof
-    exo_seasonal = df_exo.groupby("mof")["exo_med_ret"].median()
-    exo_seasonal = exo_seasonal.reindex(range(1440)).fillna(df_exo["exo_med_ret"].median())
+    df_exo = df_exo.assign(mof=mof)
+    exo_seasonal = df_exo.groupby("mof")["exo_ret"].median()
+    exo_seasonal = exo_seasonal.reindex(range(1440)).fillna(df_exo["exo_ret"].median())
 
-    return df_tgt, df_exo[["ts","exo_med_ret"]], exo_seasonal
+    exo_now = float(df_exo["exo_ret"].iloc[-1])
+    return df_tgt, df_exo[["ts","exo_ret"]], exo_seasonal, exo_now, exo_kind
 
 def make_supervised(df_tgt: pd.DataFrame, df_exo: pd.DataFrame) -> pd.DataFrame:
     df = df_tgt.merge(df_exo, on="ts", how="left")
-    df["exo_med_ret"] = df["exo_med_ret"].fillna(0.0)
+    df["exo_ret"] = df["exo_ret"].fillna(0.0)
 
-    # feature base
     df = add_lags_rolls(df, col="close")
     for L in (1,2,3,6,12,24,36,72,144):
-        df[f"exo_lag{L}"] = df["exo_med_ret"].shift(L)
+        df[f"exo_lag{L}"] = df["exo_ret"].shift(L)
     tf = time_features(df["ts"])
     df = pd.concat([df.reset_index(drop=True), tf.reset_index(drop=True)], axis=1)
 
     # target = log-return (t -> t+1)
     df["y"] = np.log(df["close"]).shift(-1) - np.log(df["close"])
 
-    # winsorization SIMMETRICA + clamp duro (in base all'ampiezza |y|)
-    y_abs_q = df["y"].abs().quantile(RET_WINSOR_HI)
+    # winsor + clamp (simmetrico)
+    y_abs_q = df["y"].abs().quantile(0.997)
     y = df["y"].clip(lower=-float(y_abs_q), upper=float(y_abs_q))
     y = y.clip(-CLIP_RET, CLIP_RET)
     df["y"] = y
 
-    # pulizia finale
     df = df.replace([np.inf, -np.inf], np.nan).dropna().reset_index(drop=True)
     df = df.loc[:, ~df.columns.duplicated()]
     return df
@@ -728,54 +675,40 @@ def fit_model(df: pd.DataFrame):
     if Model == "lgb":
         import lightgbm as lgb
         model = lgb.LGBMRegressor(
-            n_estimators=1200,
-            learning_rate=0.03,
-            max_depth=-1,
-            num_leaves=64,
-            subsample=0.9,
-            colsample_bytree=0.9,
-            reg_alpha=0.1,
-            reg_lambda=1.0,
-            min_child_samples=16,
-            random_state=42
+            n_estimators=1200, learning_rate=0.03, max_depth=-1, num_leaves=64,
+            subsample=0.9, colsample_bytree=0.9, reg_alpha=0.1, reg_lambda=1.0,
+            min_child_samples=16, random_state=42
         )
-        model.fit(
-            X_train, y_train,
-            eval_set=[(X_val, y_val)],
-            eval_metric="l2",
-            callbacks=[lgb.log_evaluation(period=0)]
-        )
+        model.fit(X_train, y_train, eval_set=[(X_val, y_val)], eval_metric="l2",
+                  callbacks=[lgb.log_evaluation(period=0)])
+        feat_imp = dict(zip(model.feature_name_, model.feature_importances_.tolist()))
     elif Model == "xgb":
         import xgboost as xgb
         model = xgb.XGBRegressor(
-            n_estimators=1200,
-            learning_rate=0.03,
-            max_depth=8,
-            subsample=0.9,
-            colsample_bytree=0.9,
-            reg_alpha=0.1,
-            reg_lambda=1.0,
-            random_state=42,
-            tree_method="hist"
+            n_estimators=1200, learning_rate=0.03, max_depth=8, subsample=0.9,
+            colsample_bytree=0.9, reg_alpha=0.1, reg_lambda=1.0, random_state=42, tree_method="hist"
         )
         model.fit(X_train, y_train, eval_set=[(X_val, y_val)], verbose=False)
+        try:
+            fmap = model.get_booster().get_score(importance_type="weight")
+            feat_imp = fmap
+        except Exception:
+            feat_imp = {}
     else:
         from sklearn.ensemble import RandomForestRegressor
         model = RandomForestRegressor(
-            n_estimators=600,
-            max_depth=None,
-            min_samples_leaf=2,
-            n_jobs=-1,
-            random_state=42
+            n_estimators=600, max_depth=None, min_samples_leaf=2, n_jobs=-1, random_state=42
         )
         model.fit(X_train, y_train)
+        try:
+            feat_imp = dict(zip(X_train.columns, model.feature_importances_.tolist()))
+        except Exception:
+            feat_imp = {}
 
-    # qualità su validation (returns)
     yhat_val = model.predict(X_val)
 
-    # statistiche returns (per de-bias e diagnostica)
     ret_stats = {
-        "mu": float(np.mean(y_train)),     # media da sottrarre in forecast (de-bias)
+        "mu": float(np.mean(y_train)),
         "sigma": float(np.std(y_train)),
         "p99": float(np.quantile(np.abs(y_train), 0.99)),
         "p995": float(np.quantile(np.abs(y_train), 0.995)),
@@ -785,11 +718,13 @@ def fit_model(df: pd.DataFrame):
         "val_mae_ret": mae(y_val, yhat_val),
         "val_rmse_ret": rmse(y_val, yhat_val),
         "val_smape_ret%": smape(y_val, yhat_val),
+        "val_diracc%": directional_acc(y_val, yhat_val),
         "n_train": int(len(X_train)),
         "n_val": int(len(X_val)),
         "model": Model,
         "Xcols": Xcols,
-        "ret_stats": ret_stats,            # <-- usato dopo
+        "ret_stats": ret_stats,
+        "feat_imp": feat_imp,
     }
     return model, Xcols, metrics
 
@@ -823,11 +758,11 @@ def _prepare_X_for_predict(model, cur_df: pd.DataFrame, Xcols: List[str]) -> pd.
     return X_df
 
 def build_features_from_state(state: pd.DataFrame) -> pd.DataFrame:
-    base_cols = ["ts","open","high","low","close","volume","exo_med_ret"]
+    base_cols = ["ts","open","high","low","close","volume","exo_ret"]
     st = state[base_cols].copy()
     df_feat = add_lags_rolls(st, col="close")
     for L in (1,2,3,6,12,24,36,72,144):
-        df_feat[f"exo_lag{L}"] = df_feat["exo_med_ret"].shift(L)
+        df_feat[f"exo_lag{L}"] = df_feat["exo_ret"].shift(L)
     tf = time_features(df_feat["ts"])
     df_feat = pd.concat([df_feat.reset_index(drop=True), tf.reset_index(drop=True)], axis=1)
     return df_feat
@@ -836,13 +771,20 @@ def _minute_of_day(ts: int) -> int:
     dt = datetime.fromtimestamp(ts, tz=timezone.utc)
     return dt.hour*60 + dt.minute
 
-def recursive_forecast(df_full: pd.DataFrame, model, Xcols: List[str],
-                       exo_seasonal: pd.Series, resid_std_ret: float,
-                       horizon_steps: int = 288,
-                       bias_mu: float = 0.0) -> pd.DataFrame:
-    base_cols = ["ts","open","high","low","close","volume","exo_med_ret"]
-    missing = [c for c in base_cols if c not in df_full.columns]
-    if missing:
+def recursive_forecast(
+    df_full: pd.DataFrame, model, Xcols: List[str],
+    exo_seasonal: pd.Series, exo_now: float, exo_alpha: float, exo_decay: float,
+    resid_std_ret: float, horizon_steps: int = 288, bias_mu: float = 0.0,
+    damp_base: float = 0.985, vol_target: float = 0.02, pi_z: float = 1.96
+) -> pd.DataFrame:
+    """
+    Forecast ricorsivo con:
+    - Componente exogenous futura: alpha*exo_now*(decay**i) + (1-alpha)*seasonal[mof]
+    - Damping regime-aware sul segnale del modello
+    - Bande che crescono con sqrt(h)
+    """
+    base_cols = ["ts","open","high","low","close","volume","exo_ret"]
+    if missing := [c for c in base_cols if c not in df_full.columns]:
         raise ValueError(f"recursive_forecast: missing base columns {missing}")
 
     state = df_full[base_cols].copy().reset_index(drop=True)
@@ -850,20 +792,24 @@ def recursive_forecast(df_full: pd.DataFrame, model, Xcols: List[str],
     last_close = float(state.loc[state.index[-1], "close"])
     step = 300  # 5m
 
-    # bound “iniziale” stretto, poi cresce fino a CLIP_RET
+    # Bound “iniziale” stretto, poi cresce fino a CLIP_RET
     base_bound = max(2.5*resid_std_ret, 0.01)
     base_bound = min(base_bound, CLIP_RET)
 
     rows = []
-    cum_log_ret = 0.0  # drift cumulato in log-space
+    cum_log_ret = 0.0  # drift cumulato
 
     for i in range(horizon_steps):
         next_ts = last_ts + step
         mof = _minute_of_day(next_ts)
-        exo = float(exo_seasonal.iloc[mof]) if 0 <= mof < len(exo_seasonal) else float(exo_seasonal.median())
+        seasonal = float(exo_seasonal.iloc[mof]) if 0 <= mof < len(exo_seasonal) else float(exo_seasonal.median())
+        exo_future = exo_alpha * (exo_now * (exo_decay**i)) + (1.0 - exo_alpha) * seasonal
 
-        new_row = {"ts": next_ts, "open": np.nan, "high": np.nan, "low": np.nan,
-                "close": last_close, "volume": 0.0, "exo_med_ret": exo}
+        # Aggiungo riga placeholder con exo futuro e close provvisorio
+        new_row = {
+            "ts": next_ts, "open": np.nan, "high": np.nan, "low": np.nan,
+            "close": last_close, "volume": 0.0, "exo_ret": exo_future
+        }
         state = pd.concat([state, pd.DataFrame([new_row])], ignore_index=True)
 
         feat = build_features_from_state(state)
@@ -871,43 +817,43 @@ def recursive_forecast(df_full: pd.DataFrame, model, Xcols: List[str],
         X_df = _prepare_X_for_predict(model, cur, Xcols)
 
         yhat_ret = float(model.predict(X_df)[0])
-        if not np.isfinite(yhat_ret):
-            yhat_ret = 0.0
+        if not np.isfinite(yhat_ret): yhat_ret = 0.0
 
-        # --- de-bias verso zero (toglie il drift medio di train) ---
+        # de-bias (toglie drift medio di train)
         yhat_ret -= float(bias_mu)
 
-        # --- damping verso lo zero con l'orizzonte ---
-        # riduce gradualmente l'impatto della ricorsione, evitando runaway
-        damp = 0.985 ** i
+        # Damping regime-aware: più vol → più damping (k>1), meno vol → meno damping
+        recent = state["close"].pct_change().tail(144).std()  # ~12h
+        recent = float(0.0 if not np.isfinite(recent) else recent)
+        k = float(np.clip((recent / max(vol_target,1e-6)), 0.6, 1.6))
+        damp = damp_base ** (i * k)
         yhat_ret *= damp
 
-        # --- bound dinamico per step ---
+        # Bound dinamico per step
         dyn = base_bound + (CLIP_RET - base_bound) * min(i/50.0, 1.0)
         yhat_ret = float(np.clip(yhat_ret, -dyn, dyn))
 
-        # --- cap sulla deriva cumulata nelle 24h ---
+        # Cap sulla deriva cumulata 24h
         proposed_cum = cum_log_ret + yhat_ret
         capped_cum = float(np.clip(proposed_cum, -DRIFT_CAP_24H, DRIFT_CAP_24H))
-        # se serve, ridimensiona lo step corrente per rispettare il cap cumulato
         yhat_ret = capped_cum - cum_log_ret
         cum_log_ret = capped_cum
 
-        # ricostruzione prezzo
+        # Ricostruzione prezzo
         next_close = float(last_close * math.exp(yhat_ret))
 
-        lower = float(last_close * math.exp(yhat_ret - 1.96*resid_std_ret))
-        upper = float(last_close * math.exp(yhat_ret + 1.96*resid_std_ret))
+        # Bande: deviazione effettiva scala ~ sqrt(h)
+        h = i + 1
+        eff = max(resid_std_ret, 1e-6) * math.sqrt(h)
+        lower = float(last_close * math.exp(yhat_ret - pi_z * eff))
+        upper = float(last_close * math.exp(yhat_ret + pi_z * eff))
 
         state.loc[state.index[-1], "close"] = next_close
         last_close, last_ts = next_close, next_ts
 
         rows.append({
-            "ts": next_ts,
-            "time_iso": to_iso(next_ts),
-            "yhat": next_close,
-            "yhat_lower": lower,
-            "yhat_upper": upper
+            "ts": next_ts, "time_iso": to_iso(next_ts),
+            "yhat": next_close, "yhat_lower": lower, "yhat_upper": upper
         })
 
     return pd.DataFrame(rows)
@@ -925,51 +871,32 @@ def _candlestick_ax(ax, ts, o, h, l, c, width_sec=120, alpha=0.9):
     h = np.asarray(h, dtype=float)
     l = np.asarray(l, dtype=float)
     c = np.asarray(c, dtype=float)
-
     x = _mpl_num_from_epoch_seconds(ts)
     width_days = float(width_sec) / 86400.0
-
     for xi, oi, hi, li, ci in zip(x, o, h, l, c):
         ax.plot([xi, xi], [li, hi], linewidth=0.8)
         y0 = min(oi, ci); y1 = max(oi, ci)
         height = (y1 - y0) if (y1 > y0) else 1e-12
-        ax.add_patch(
-            plt.Rectangle((xi - width_days/2, y0), width_days, height,
-                          fill=True, alpha=alpha, linewidth=0.5)
-        )
+        ax.add_patch(plt.Rectangle((xi - width_days/2, y0), width_days, height,
+                                   fill=True, alpha=alpha, linewidth=0.5))
 
 def save_candlestick_with_forecast(df_tgt: pd.DataFrame, fc: pd.DataFrame, out_png: str):
-    """
-    Candlestick ultimi 3 giorni reali + overlay della previsione (linea con bande).
-    Robusta ai tipi tempo e ai NaN/inf.
-    """
-    if df_tgt is None or df_tgt.empty or fc is None or fc.empty:
-        return
+    if df_tgt is None or df_tgt.empty or fc is None or fc.empty: return
 
-    # Ordina e filtra timestamp plausibili (2000–2100 in epoch seconds)
     fc = fc.copy().sort_values("ts")
-    fc = fc[(np.isfinite(fc["ts"])) &
-            (fc["ts"] >= 946684800) &   # 2000-01-01
-            (fc["ts"] <= 4102444800)]   # 2100-01-01
-    if fc.empty:
-        return
+    fc = fc[(np.isfinite(fc["ts"])) & (fc["ts"] >= 946684800) & (fc["ts"] <= 4102444800)]
+    if fc.empty: return
 
-    start_fc = int(fc["ts"].min())
-    win_start = start_fc - 3*24*60*60
-
+    start_fc = int(fc["ts"].min()); win_start = start_fc - 3*24*60*60
     hist = (df_tgt[(df_tgt["ts"] >= win_start) & (df_tgt["ts"] <= start_fc)]
             .copy().sort_values("ts"))
     if hist.empty:
         tmax = int(df_tgt["ts"].max())
         hist = df_tgt[df_tgt["ts"] >= (tmax - 3*24*60*60)].copy().sort_values("ts")
-        if hist.empty:
-            return
+        if hist.empty: return
 
     fig, ax = plt.subplots(figsize=(12, 6))
-
-    # --- Candlestick storico ---
-    _candlestick_ax(
-        ax,
+    _candlestick_ax(ax,
         hist["ts"].to_numpy(dtype=float),
         hist["open"].to_numpy(dtype=float),
         hist["high"].to_numpy(dtype=float),
@@ -978,17 +905,12 @@ def save_candlestick_with_forecast(df_tgt: pd.DataFrame, fc: pd.DataFrame, out_p
         width_sec=90
     )
 
-    # --- Overlay forecast (linea + bande) ---
     t_fc_num = _mpl_num_from_epoch_seconds(fc["ts"].to_numpy(dtype=float))
     yhat = fc["yhat"].to_numpy(dtype=float)
-
     mask = np.isfinite(t_fc_num) & np.isfinite(yhat)
-    t_fc_num = t_fc_num[mask]
-    yhat     = yhat[mask]
-
+    t_fc_num = t_fc_num[mask]; yhat = yhat[mask]
     ax.plot(t_fc_num, yhat, linewidth=1.4, label="Forecast (close)")
 
-    # adatta y-limits su storico+forecast (con un 10% di margine)
     y_all = np.concatenate([hist["close"].to_numpy(dtype=float), yhat])
     ymin, ymax = np.nanmin(y_all), np.nanmax(y_all)
     margin = (ymax - ymin) * 0.10 if np.isfinite(ymax - ymin) else 0.0
@@ -1001,45 +923,27 @@ def save_candlestick_with_forecast(df_tgt: pd.DataFrame, fc: pd.DataFrame, out_p
         ax.fill_between(t_fc_num, ylow, yhigh, alpha=0.25, label="Conf.")
 
     ax.set_title("Ultimi 3 giorni (5m) + Forecast prossime 24h")
-    ax.set_xlabel("Tempo (UTC)")
-    ax.set_ylabel("Prezzo")
-    ax.legend()
-
-    ax.xaxis_date()
-    locator = mdates.AutoDateLocator()
-    ax.xaxis.set_major_locator(locator)
-    ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+    ax.set_xlabel("Tempo (UTC)"); ax.set_ylabel("Prezzo"); ax.legend()
+    ax.xaxis_date(); locator = mdates.AutoDateLocator()
+    ax.xaxis.set_major_locator(locator); ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
     fig.autofmt_xdate()
 
-    plt.tight_layout()
-    os.makedirs(os.path.dirname(out_png), exist_ok=True)
-    fig.savefig(out_png)
-    plt.close(fig)
+    plt.tight_layout(); os.makedirs(os.path.dirname(out_png), exist_ok=True)
+    fig.savefig(out_png); plt.close(fig)
 
-# =================== Orchestrator completo ===================
+# =================== Orchestrator ===================
 def ensure_dir(path: str):
-    os.makedirs(path, exist_ok=True)
-    return path
+    os.makedirs(path, exist_ok=True); return path
 
-def robust_select_similar(
-    chain: str,
-    target_pair: str,
-    count_sim: int,
-    relax: float,
-    dex_ids: Optional[List[str]],
-    allow_any_dex: bool,
-    no_quote_filter: bool,
-    explain: bool,
-    diag: bool,
-    floors: Optional[Dict[str, float]] = None,
-    caps: Optional[Dict[str, float]] = None,
-    dedup_base: bool = True,
-) -> pd.DataFrame:
-    floors = floors or DEFAULT_FLOORS
-    caps   = caps   or DEFAULT_CAPS
+def robust_select_similar(chain: str, target_pair: str, count_sim: int, relax: float,
+                          dex_ids: Optional[List[str]], allow_any_dex: bool,
+                          no_quote_filter: bool, explain: bool, diag: bool,
+                          floors: Optional[Dict[str, float]] = None,
+                          caps: Optional[Dict[str, float]] = None,
+                          dedup_base: bool = True) -> pd.DataFrame:
+    floors = floors or DEFAULT_FLOORS; caps = caps or DEFAULT_CAPS
 
     def scaled(factor: float) -> Dict[str, float]:
-        # riduci i floors per aprire i cancelli quando serve
         return {
             "liq": max(float(floors["liq"]) * factor, 0.0),
             "mcap": max(float(floors["mcap"]) * factor, 0.0),
@@ -1049,32 +953,19 @@ def robust_select_similar(
         }
 
     tries = [
-        # relax progressivo + allenta floors + quote/dex sempre più aperti
-        (relax,              allow_any_dex, no_quote_filter, floors,        dedup_base),
-        (max(relax*1.5,1.0), allow_any_dex, no_quote_filter, scaled(0.5),   dedup_base),
-        (max(relax*2.5,1.0), allow_any_dex, True,            scaled(0.2),   dedup_base),
-        (max(relax*3.5,1.0), True,          True,            scaled(0.0),   False),   # anche senza dedup
+        (relax,              allow_any_dex, no_quote_filter, floors,      dedup_base),
+        (max(relax*1.5,1.0), allow_any_dex, no_quote_filter, scaled(0.5), dedup_base),
+        (max(relax*2.5,1.0), allow_any_dex, True,            scaled(0.2), dedup_base),
+        (max(relax*3.5,1.0), True,          True,            scaled(0.0), False),
     ]
-
     last_err = None
     for rlx, anydex, noq, fl, dedup in tries:
         try:
             return select_similar(
-                chain=chain,
-                target_pair_addr=target_pair,
-                count=count_sim,
-                relax=rlx,
-                dex_ids=dex_ids,
-                allow_any_dex=anydex,
-                quotes_allow=None,
-                no_quote_filter=noq,
-                anchors=None,
-                source_mode="both",
-                dedup_base=dedup,
-                explain=explain,
-                diag=diag,
-                floors=fl,
-                caps=caps
+                chain=chain, target_pair_addr=target_pair, count=count_sim, relax=rlx,
+                dex_ids=dex_ids, allow_any_dex=anydex, quotes_allow=None, no_quote_filter=noq,
+                anchors=None, source_mode="both", dedup_base=dedup, explain=explain, diag=diag,
+                floors=fl, caps=caps
             )
         except Exception as e:
             last_err = e
@@ -1095,84 +986,77 @@ def _val_price_metrics(df_sup_tail: pd.DataFrame, yhat_ret: np.ndarray) -> Dict[
     }
 
 def run_pipeline(
-    target_pair: str,
-    chain: str,
-    days: int,
-    count_sim: int,
-    relax: float,
-    no_quote_filter: bool,
-    dex_ids: Optional[List[str]],
-    allow_any_dex: bool,
-    outdir: str,
-    top_k_exo: int = 10,
-    horizon_minutes: int = 24*60,
-    step_minutes: int = 5,
-    save_ohlcv: bool = False,
-    db_path: str = "data/predictor.db",
-    explain: bool = False,
-    diag: bool = False,
-    floors: Optional[Dict[str, float]] = None,
-    caps: Optional[Dict[str, float]] = None,
+    target_pair: str, chain: str, days: int, count_sim: int, relax: float,
+    no_quote_filter: bool, dex_ids: Optional[List[str]], allow_any_dex: bool,
+    outdir: str, top_k_exo: int = 10, horizon_minutes: int = 24*60, step_minutes: int = 5,
+    save_ohlcv: bool = False, db_path: str = "data/predictor.db",
+    explain: bool = False, diag: bool = False,
+    floors: Optional[Dict[str, float]] = None, caps: Optional[Dict[str, float]] = None,
     dedup_base: bool = True,
+    # nuovi parametri
+    exo_alpha: float = 0.7, exo_decay: float = 0.985,
+    damp_base: float = 0.992, vol_target: float = 0.02,
+    pi_z: float = 1.96
 ):
     _ = ds_get_pair(chain, target_pair)
 
-    # 1) selezione simili
     print("[1/6] Selezione pool simili…")
     df_sim = robust_select_similar(
         chain, target_pair, count_sim, relax,
-        dex_ids, allow_any_dex, no_quote_filter, explain, diag,
-        floors=floors, caps=caps, dedup_base=dedup_base
+        dex_ids, allow_any_dex, no_quote_filter,
+        explain, diag, floors=floors, caps=caps, dedup_base=dedup_base
     )
-    os.makedirs(os.path.join("data"), exist_ok=True)
+    os.makedirs("data", exist_ok=True)
     df_sim.to_csv(os.path.join("data","pools_list.csv"), index=False)
     print(f"    → pool simili: {len(df_sim)} (salvati in data/pools_list.csv)")
 
-    # 2) OHLCV + exogenous + profilo stagionale
     print("[2/6] Scarico OHLCV 5m (target + exogenous)…")
-    df_tgt, df_exo, exo_seasonal = fetch_target_and_exo(target_pair, chain, days, df_sim, top_k_exo=top_k_exo)
+    df_tgt, df_exo, exo_seasonal, exo_now, exo_kind = fetch_target_and_exo(
+        target_pair, chain, days, df_sim, top_k_exo=top_k_exo
+    )
 
     if save_ohlcv:
         subdir = os.path.join("data", "gold", chain, f"POOL_{target_pair[:6]}")
         ensure_dir(subdir)
         saved = save_parquet_or_csv(df_tgt, os.path.join(subdir, "candles_5m.parquet"))
         append_sqlite(df_tgt, chain, target_pair, db_path=db_path)
-        print(f"    → target rows={len(df_tgt)} saved={saved}")
+        print(f"    → target rows={len(df_tgt)} saved={saved} exo_kind={exo_kind}")
 
-    # 3) supervised dataset
     print("[3/6] Creo dataset supervisionato (returns)…")
     df_sup = make_supervised(df_tgt, df_exo)
     if len(df_sup) < 600:
         print(f"[warn] storico limitato ({len(df_sup)} righe). Le metriche potrebbero essere instabili.")
 
-    # 4) training
     print("[4/6] Addestro il modello…")
     model, Xcols, metrics = fit_model(df_sup)
 
-    # metriche in spazio prezzo
     val_len = metrics["n_val"]
     X_val = df_sup.iloc[-val_len:][Xcols]
     yhat_val_ret = model.predict(X_val)
     price_metrics = _val_price_metrics(df_sup.iloc[-val_len:], yhat_val_ret)
 
     print(f"    → Model={metrics['model']} | Ntrain={metrics['n_train']} Nval={metrics['n_val']}")
-    print(f"      Returns: MAE={metrics['val_mae_ret']:.6e}  RMSE={metrics['val_rmse_ret']:.6e}  sMAPE={metrics['val_smape_ret%']:.4f}%")
+    print(f"      Returns: MAE={metrics['val_mae_ret']:.6e}  RMSE={metrics['val_rmse_ret']:.6e}  sMAPE={metrics['val_smape_ret%']:.4f}%  DirAcc={metrics['val_diracc%']:.2f}%")
     print(f"      Price:   MAE={price_metrics['val_mae_price']:.6f}  RMSE={price_metrics['val_rmse_price']:.6f}  MAPE={price_metrics['val_mape_price%']:.4f}%")
 
-    # 5) forecast 24h/5m
     print("[5/6] Genero forecast…")
     steps = int(horizon_minutes // step_minutes)
     resid_std_ret = float(np.std(df_sup.iloc[-val_len:]["y"].to_numpy() - yhat_val_ret)) if val_len else 0.0
-    base_cols = ["ts","open","high","low","close","volume","exo_med_ret"]
-    base_state = df_tgt.merge(df_exo, on="ts", how="left").fillna({"exo_med_ret":0.0})
+
+    base_cols = ["ts","open","high","low","close","volume","exo_ret"]
+    base_state = df_tgt.merge(df_exo, on="ts", how="left").fillna({"exo_ret":0.0})
     base_state = base_state[base_cols].copy()
+
     fc = recursive_forecast(
-        base_state, model, Xcols, exo_seasonal, resid_std_ret,
-        horizon_steps=steps,
-        bias_mu=metrics.get("ret_stats", {}).get("mu", 0.0)
+        base_state, model, Xcols,
+        exo_seasonal=exo_seasonal, exo_now=float(exo_now),
+        exo_alpha=float(exo_alpha), exo_decay=float(exo_decay),
+        resid_std_ret=resid_std_ret, horizon_steps=steps,
+        bias_mu=metrics.get("ret_stats", {}).get("mu", 0.0),
+        damp_base=float(damp_base), vol_target=float(vol_target), pi_z=float(pi_z)
     )
 
-    # 6) salvataggio + chart
+    print("[6/6] Salvo output…")
     subdir = ensure_dir(os.path.join(outdir, chain, f"POOL_{target_pair[:6]}"))
     ts_str = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
     out_csv = os.path.join(subdir, f"forecast_5m_{ts_str}.csv")
@@ -1189,6 +1073,7 @@ def run_pipeline(
         f.write(f"val_mae_ret: {metrics['val_mae_ret']:.8e}\n")
         f.write(f"val_rmse_ret: {metrics['val_rmse_ret']:.8e}\n")
         f.write(f"val_smape_ret%: {metrics['val_smape_ret%']:.6f}\n")
+        f.write(f"val_diracc%: {metrics['val_diracc%']:.4f}\n")
         f.write(f"val_mae_price: {price_metrics['val_mae_price']:.8f}\n")
         f.write(f"val_rmse_price: {price_metrics['val_rmse_price']:.8f}\n")
         f.write(f"val_mape_price%: {price_metrics['val_mape_price%']:.6f}\n")
@@ -1196,30 +1081,32 @@ def run_pipeline(
         f.write(f"no_quote_filter: {no_quote_filter}\n")
         f.write(f"count_sim: {count_sim}\n")
         f.write(f"top_k_exo: {top_k_exo}\n")
-        if not df_sim.empty:
-            f.write(f"sim_pools_used: {','.join(df_sim['pairAddress'].head(10))}\n")
+        f.write(f"exo_kind: {exo_kind}\n")
+        f.write(f"exo_alpha: {exo_alpha}  exo_decay: {exo_decay}\n")
+        f.write(f"damp_base: {damp_base}  vol_target: {vol_target}\n")
+        f.write(f"clip_ret: {CLIP_RET}  drift_cap_24h: {DRIFT_CAP_24H}\n")
+        if metrics.get("feat_imp"):
+            f.write("top_features:\n")
+            top = sorted(metrics["feat_imp"].items(), key=lambda x: -x[1])[:20]
+            for k,v in top: f.write(f"  - {k}: {v}\n")
         f.write(f"generated_utc: {datetime.now(timezone.utc).isoformat().replace('+00:00','Z')}\n")
 
-    # chart candlestick storico + overlay forecast
     save_candlestick_with_forecast(df_tgt, fc, chart_png)
 
     print("\n=== MODEL VALIDATION ===")
     print(f"Model: {metrics['model']} | Ntrain={metrics['n_train']} Nval={metrics['n_val']}")
-    print(f"Returns: MAE={metrics['val_mae_ret']:.6e}  RMSE={metrics['val_rmse_ret']:.6e}  sMAPE={metrics['val_smape_ret%']:.4f}%")
+    print(f"Returns: MAE={metrics['val_mae_ret']:.6e}  RMSE={metrics['val_rmse_ret']:.6e}  sMAPE={metrics['val_smape_ret%']:.4f}%  DirAcc={metrics['val_diracc%']:.2f}%")
     print(f"Price:   MAE={price_metrics['val_mae_price']:.6f}  RMSE={price_metrics['val_rmse_price']:.6f}  MAPE={price_metrics['val_mape_price%']:.4f}%")
-
-    print("\n=== FORECAST (head) ===")
-    print(fc.head(10).to_string(index=False))
+    print("\n=== FORECAST (head) ==="); print(fc.head(10).to_string(index=False))
     print(f"\nSaved forecast to: {out_csv}")
     print(f"Saved model card to: {meta_txt}")
     print(f"Saved candlestick chart to: {chart_png}")
-
     return out_csv
 
 # =================== CLI ===================
 def parse_args():
     ap = argparse.ArgumentParser(
-        description="Predice i prezzi a 5m per 24h di un pair DexScreener su BSC (default), con discovery di pool simili e grafico candlestick."
+        description="Predice i prezzi a 5m per 24h di un pair DexScreener (BSC default), con discovery di pool simili e grafico candlestick."
     )
     ap.add_argument("target_pair", help="pairAddress DexScreener (es: 0xf0a9...)")
     ap.add_argument("--chain", default=NETWORK, help="Rete (default: bsc)")
@@ -1229,60 +1116,65 @@ def parse_args():
     ap.add_argument("--no_quote_filter", action="store_true", help="Disattiva filtro sul quote")
     ap.add_argument("--dex_ids", default=",".join(DEFAULT_PCS_DEX_IDS), help="dexIds separati da virgola")
     ap.add_argument("--allow_any_dex", action="store_true", help="Accetta qualsiasi dexId")
-    ap.add_argument("--top_k_exo", type=int, default=10, help="Quanti simili usare per la mediana exogenous")
+    ap.add_argument("--top_k_exo", type=int, default=10, help="Quanti simili usare per l'exogenous")
     ap.add_argument("--outdir", default="data/predictions", help="Cartella output")
     ap.add_argument("--horizon_minutes", type=int, default=24*60, help="Orizzonte in minuti (default 1440)")
     ap.add_argument("--step_minutes", type=int, default=5, help="Passo in minuti (default 5)")
-    ap.add_argument("--save_ohlcv", action="store_true", help="Salva OHLCV del target (utile per grafico)")
-    ap.add_argument("--db", default="data/predictor.db", help="Path DB SQLite per OHLCV (se --save_ohlcv)")
+    ap.add_argument("--save_ohlcv", action="store_true", help="Salva OHLCV del target")
+    ap.add_argument("--db", default="data/predictor.db", help="Path DB SQLite per OHLCV")
     ap.add_argument("--explain", action="store_true", help="Stampa motivi di esclusione conteggiati")
     ap.add_argument("--diag", action="store_true", help="Stampa diagnostica discovery")
 
-    # ---- nuovi parametri per floors/caps e dedup ----
+    # floors/caps e dedup
     ap.add_argument("--min_liq", type=float, default=DEFAULT_FLOORS["liq"], help="Floor liquidità USD (default 2e4)")
     ap.add_argument("--min_mcap", type=float, default=DEFAULT_FLOORS["mcap"], help="Floor market cap USD (default 1e6)")
     ap.add_argument("--min_vol24", type=float, default=DEFAULT_FLOORS["vol24"], help="Floor volume 24h USD (default 1e4)")
     ap.add_argument("--min_tx24", type=float, default=float(DEFAULT_FLOORS["tx24"]), help="Floor tx 24h (default 50)")
     ap.add_argument("--min_age_days", type=float, default=DEFAULT_FLOORS["age_days"], help="Floor età in giorni (default 0.5)")
     ap.add_argument("--max_age_days", type=float, default=DEFAULT_CAPS["age_days"], help="Cap età in giorni (default 720)")
-    ap.add_argument("--dedup_base_off", action="store_true", help="Non deduplicare per base token (mantieni più pool dello stesso coin)")
+    ap.add_argument("--dedup_base_off", action="store_true", help="Non deduplicare per base token")
+
+    # nuovi controlli forecast
+    ap.add_argument("--exo_alpha", type=float, default=0.7, help="Peso della componente exo live nel futuro [0..1]")
+    ap.add_argument("--exo_decay", type=float, default=0.985, help="Decay per la componente exo live nel futuro")
+    ap.add_argument("--damp_base", type=float, default=0.992, help="Fattore di damping base per passo")
+    ap.add_argument("--vol_target", type=float, default=0.02, help="Target vol per modulare il damping")
+    ap.add_argument("--pi_z", type=float, default=1.96, help="Z-score per bande di confidenza")
+
+    # guardrail
+    ap.add_argument("--clip_ret", type=float, default=CLIP_RET, help="Clamp per step sul return (default 0.20)")
+    ap.add_argument("--drift_cap_24h", type=float, default=DRIFT_CAP_24H, help="Cap deriva cumulata log 24h (default 3.0)")
+
     return ap.parse_args()
 
 def main():
+    global CLIP_RET, DRIFT_CAP_24H
     args = parse_args()
-    dex_ids = [d.strip().lower() for d in (args.dex_ids or "").split(",") if d.strip()] or None
 
+    # aggiorna guardrail globali da CLI
+    CLIP_RET = float(max(args.clip_ret, 0.01))
+    DRIFT_CAP_24H = float(max(args.drift_cap_24h, 0.5))
+
+    dex_ids = [d.strip().lower() for d in (args.dex_ids or "").split(",") if d.strip()] or None
     floors = {
-        "liq": args.min_liq,
-        "mcap": args.min_mcap,
-        "vol24": args.min_vol24,
-        "tx24": float(args.min_tx24),
-        "age_days": args.min_age_days,
+        "liq": args.min_liq, "mcap": args.min_mcap, "vol24": args.min_vol24,
+        "tx24": float(args.min_tx24), "age_days": args.min_age_days,
     }
-    caps = dict(DEFAULT_CAPS)
-    caps["age_days"] = args.max_age_days
+    caps = dict(DEFAULT_CAPS); caps["age_days"] = args.max_age_days
 
     try:
         run_pipeline(
-            target_pair=(args.target_pair or "").lower(),
-            chain=args.chain,
-            days=args.days,
-            count_sim=args.count_sim,
-            relax=max(args.relax, 1.0),
-            no_quote_filter=bool(args.no_quote_filter),
-            dex_ids=dex_ids,
-            allow_any_dex=bool(args.allow_any_dex),
-            outdir=args.outdir,
-            top_k_exo=args.top_k_exo,
-            horizon_minutes=args.horizon_minutes,
-            step_minutes=args.step_minutes,
-            save_ohlcv=bool(args.save_ohlcv),
-            db_path=args.db,
-            explain=args.explain,
-            diag=args.diag,
-            floors=floors,
-            caps=caps,
+            target_pair=(args.target_pair or "").lower(), chain=args.chain, days=args.days,
+            count_sim=args.count_sim, relax=max(args.relax, 1.0),
+            no_quote_filter=bool(args.no_quote_filter), dex_ids=dex_ids,
+            allow_any_dex=bool(args.allow_any_dex), outdir=args.outdir,
+            top_k_exo=args.top_k_exo, horizon_minutes=args.horizon_minutes,
+            step_minutes=args.step_minutes, save_ohlcv=bool(args.save_ohlcv), db_path=args.db,
+            explain=args.explain, diag=args.diag, floors=floors, caps=caps,
             dedup_base=(not args.dedup_base_off),
+            exo_alpha=args.exo_alpha, exo_decay=args.exo_decay,
+            damp_base=args.damp_base, vol_target=args.vol_target,
+            pi_z=args.pi_z
         )
     except Exception as e:
         print(f"Errore: {e}")
