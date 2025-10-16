@@ -15,6 +15,10 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 
+
+"""
+python predici.py 0xc4Dc171d499b3F5340bfFed8433BddCec8d33b04 --chain bsc --days 90 --count_sim 1500 --top_k_exo 150 --relax 12.0 --allow_any_dex --no_quote_filter --dedup_base_off --min_liq 0 --min_mcap 0 --min_vol24 0 --min_tx24 0 --min_age_days 0 --max_age_days 5000 --exo_alpha 0.8 --exo_decay 0.992 --damp_base 0.996 --vol_target 0.025 --clip_ret 0.25 --drift_cap_24h 3.5 --pi_z 2.05 --explain --diag
+"""
 # =================== Costanti e default (parametrizzabili) ===================
 DEX_API = "https://api.dexscreener.com"
 GT_API  = "https://api.geckoterminal.com/api/v2"
@@ -46,6 +50,8 @@ DEFAULT_PCS_DEX_IDS = (
 # Filtri adattivi
 DEFAULT_FLOORS = { "liq": 2e4, "mcap": 1e6, "vol24": 1e4, "tx24": 50, "age_days": 0.5 }
 DEFAULT_CAPS   = { "liq": 1e9, "mcap": 1e10, "vol24": 5e8, "tx24": 2_000_000, "age_days": 720.0 }
+
+
 
 # Rate limit per host
 HOST_MIN_INTERVAL = { "api.dexscreener.com": 0.15, "api.geckoterminal.com": 2.2 }
@@ -330,6 +336,18 @@ def select_similar(chain: str, target_pair_addr: str, count: int, relax: float,
                    floors: Optional[Dict[str, float]] = None,
                    caps: Optional[Dict[str, float]] = None) -> pd.DataFrame:
 
+    EXCLUDED_BASE_SYMS = {
+        # Stablecoin USD-based (centralizzate)
+        "USDT", "USDC", "BUSD", "TUSD", "USDP", "GUSD", "FDUSD", "PYUSD",
+        "USDL", "USDM",
+        # Stablecoin decentralizzate o sintetiche
+        "DAI", "LUSD", "FRAX", "SUSD", "GHO", "CRVUSD", "USDE",
+        # Stablecoin non-USD
+        "EURC", "EURS", "EURT", "EUROE", "AGEUR", "XSGD",
+        # Token principali non desiderati come base
+        "ETH", "WETH", "WBNB", "BTC", "WBTC", "BTCB"
+    }
+
     tgt = ds_get_pair(chain, target_pair_addr)
     filters = adaptive_filters(tgt, relax=relax, floors=floors, caps=caps)
 
@@ -365,6 +383,15 @@ def select_similar(chain: str, target_pair_addr: str, count: int, relax: float,
         fails = filter_reasons(p, filters, quote_mode, quote_single, quote_allow, allowed_dex)
         if not fails:
             base = p.get("baseToken") or {}; quote = p.get("quoteToken") or {}
+
+            # ⬇️ PATCH: escludi i pair con base_symbol non desiderato
+            base_sym = (base.get("symbol") or "").upper()
+            if base_sym in EXCLUDED_BASE_SYMS:
+                if explain:
+                    reasons["base_symbol_excluded"] = reasons.get("base_symbol_excluded", 0) + 1
+                continue
+            # ⬆️ FINE PATCH
+
             rec = {
                 "pairAddress": (p.get("pairAddress") or "").lower(),
                 "dexId": p.get("dexId"),
@@ -405,6 +432,8 @@ def select_similar(chain: str, target_pair_addr: str, count: int, relax: float,
 
     df = pd.DataFrame(sorted(rows, key=lambda r: r["score"])).head(count)
     return df
+
+
 
 # =================== GeckoTerminal OHLCV + persistenza ===================
 def detect_parquet_engine() -> Optional[str]:

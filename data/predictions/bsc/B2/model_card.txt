@@ -1,0 +1,42 @@
+pair: 0xc1a780989734a0e5df875cebe410748562e1c5e6
+chain: bsc
+model: lgb
+n_train: 21908
+n_val: 3866
+val_mae_ret: 5.22076446e-03
+val_rmse_ret: 8.45936079e-03
+val_smape_ret%: 155.937662
+val_diracc%: 51.9400
+val_mae_price: 0.00690052
+val_rmse_price: 0.01194780
+val_mape_price%: 0.521326
+relax: 12.0
+no_quote_filter: True
+count_sim: 1500
+top_k_exo: 150
+exo_kind: weighted_corr
+exo_alpha: 0.8  exo_decay: 0.992
+damp_base: 0.996  vol_target: 0.025
+clip_ret: 0.25  drift_cap_24h: 3.5
+top_features:
+  - exo_lag72: 2010
+  - exo_lag144: 1974
+  - ret_lag144: 1801
+  - exo_lag24: 1769
+  - exo_ret: 1766
+  - vol_lag72: 1755
+  - cos_day: 1751
+  - vol_lag144: 1720
+  - ret_lag72: 1679
+  - exo_lag3: 1658
+  - exo_lag2: 1654
+  - exo_lag6: 1630
+  - exo_lag12: 1621
+  - ret_lag24: 1617
+  - exo_lag1: 1595
+  - exo_lag36: 1572
+  - sin_day: 1554
+  - vol_lag36: 1529
+  - close_std3: 1520
+  - ret_lag12: 1517
+generated_utc: 2025-10-15T20:07:32.957393Z
