@@ -2,7 +2,7 @@ name: Volume Watch (every 5m)
 
 on:
   schedule:
-    - cron: "*/5 * * * *"   # ogni 5 minuti (UTC)
+    - cron: "*/5 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -36,9 +36,9 @@ jobs:
       - name: Install deps
         run: |
           python -m pip install --upgrade pip
-          pip install requests
+          pip install requests tenacity
 
-      - name: Run volume_watch.py (spike alert only)
+      - name: Run volume_watch.py (single Telegram message)
         run: |
           python volume_watch.py \
             --mode from-screener \
@@ -50,19 +50,37 @@ jobs:
             --rps-ds 2.0 \
             --funnel-show 100 \
             --skip-unchanged-days 0 \
-            --threshold-x 10 \
-            --min-cov 10 \
+            --delta-mode approx \
             --send-telegram
+            # opzionali:
+            # --min-cov 2 \
+            # --threshold-x 10
 
       - name: Commit state (volwatch)
         if: always()
         run: |
+          set -e
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add state/volwatch/*.json state/telegram/msg_volwatch.html state/top_pairs.json || true
           if ! git diff --cached --quiet; then
             git commit -m "volwatch: update $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
-            git push
+            # rebase + retry, poi fallback a force-with-lease
+            for attempt in 1 2 3; do
+              git fetch origin main
+              if git pull --rebase origin main; then
+                if git push origin HEAD:main; then
+                  echo "Push OK (attempt $attempt)"; break
+                fi
+              else
+                git rebase --abort || true
+              fi
+              if [ $attempt -eq 3 ]; then
+                echo "Rebase/push failed, trying force-with-lease"
+                git push --force-with-lease origin HEAD:main && echo "Force-with-lease push OK"
+              fi
+              sleep 2
+            done
           else
             echo "No state changes to commit."
           fi
