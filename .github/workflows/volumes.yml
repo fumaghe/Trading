@@ -50,12 +50,9 @@ jobs:
             --rps-ds 2.0 \
             --funnel-show 100 \
             --skip-unchanged-days 0 \
-            --delta-mode approx \
-            --send-telegram
-            # opzionali:
-            # --min-cov 2 \
-            # --threshold-x 10
-
+            --send-telegram \
+            --cex-watch \
+            --cex-markets both
       - name: Commit state (volwatch)
         if: always()
         run: |
