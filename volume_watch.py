@@ -3,12 +3,12 @@
 
 """
 Volume Watch — run consigliato ogni 5 minuti
-- Calcola Vol(30m) esatto sommando i campioni DexScreener `volume.m5` persistiti su disco.
-- Calcola Δ% tra ultimi 30' e 30' precedenti (in %) e stampa un unico messaggio tabellare.
-- Fallback: se `m5` non è disponibile/insufficiente, mostra ~Vol30m ≈ h1/2 e Δ% n.d.
-- Output HTML tabellare unico: state/telegram/msg_volwatch.html (invio Telegram opzionale, singolo messaggio)
-- Stato per pair: state/volwatch/{pair}.json  (mantiene una history di campioni m5 ~75')
-- Salva e riusa la lista TOP in: state/top_pairs.json (fallback se test4.py fallisce)
+- Calcola Vol(30m) da m5 (DexScreener) con buffer su disco.
+- Calcola Δ% tra ultimi 30' e 30' precedenti.
+- Fallback: stima con scaling dei m5 parziali e/o con h1 se mancano campioni.
+- Output HTML unico: state/telegram/msg_volwatch.html (invio Telegram opzionale).
+- Stato per pair: state/volwatch/{pair}.json (history m5 ~75').
+- Salva lista TOP in: state/top_pairs.json (fallback se test4.py fallisce).
 """
 
 from __future__ import annotations
@@ -33,16 +33,13 @@ UA = (
 HEADERS = {"Accept": "application/json", "User-Agent": UA}
 HTTP_TIMEOUT = 30
 
-# Chain fissa BSC come nello script originale
 DEX_PAIRS_URL = "https://api.dexscreener.com/latest/dex/pairs/bsc/{pair}"
 TOP_HEADER = "— Tutti e 3 i parametri (TOP) —"
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-
 SCRIPT_DIR = Path(__file__).resolve().parent
 
-# Finestra e retention per il buffer m5
 WIN_30M_SEC = 30 * 60
-RETENTION_SEC = 75 * 60  # ~1h15 per sicurezza
+RETENTION_SEC = 75 * 60  # ~1h15
 
 # ---------- Utils ---------- #
 
@@ -65,15 +62,11 @@ def format_pct_signed(x: Optional[float]) -> str:
         return "n.d."
 
 def now_iso_local() -> str:
-    # timestamp locale (il runner ha TZ=Europe/Rome da workflow)
     return datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
 
-# --- Telegram (singolo messaggio) ---
+# --- Telegram --- #
 
-def send_telegram_single(html_text: str,
-                         token: str,
-                         chat_id: str,
-                         parse_mode: str = "HTML") -> bool:
+def send_telegram_single(html_text: str, token: str, chat_id: str, parse_mode: str = "HTML") -> bool:
     api = f"https://api.telegram.org/bot{token}/sendMessage"
     try:
         r = requests.post(api, data={
@@ -91,7 +84,7 @@ def send_telegram_single(html_text: str,
             pass
         return False
 
-# ---------- Screener bridge (opzionale) ---------- #
+# ---------- Screener bridge ---------- #
 
 def run_test4_and_capture(python_bin: str, min_liq: int, workers: int,
                           dominance: float, max_tickers_scan: int,
@@ -127,17 +120,18 @@ def parse_top_only(stdout: str) -> List[Dict[str, Any]]:
             continue
         m = re.match(
             r"""^
-            ([A-Z0-9._-]+)\s*[·•\-]\s*       # symbol (più permissivo)
+            ([A-Z0-9._-]+)\s*[·•\-]\s*
             (.*?)\s*[·•\-]\s*
             LP:\s*([\d\.\$]+)\s*[·•\-]\s*
             Pool:\s*(0x[a-fA-F0-9]{40})\s*$""",
             line, flags=re.X,
         )
         if m:
-            symbol = m.group(1).upper()
-            name = m.group(2).strip()
-            pair = m.group(4).lower()
-            entries.append({"symbol": symbol, "name": name, "pair": pair})
+            entries.append({
+                "symbol": m.group(1).upper(),
+                "name": m.group(2).strip(),
+                "pair": m.group(4).lower()
+            })
     return entries
 
 # ---------- DexScreener ---------- #
@@ -148,8 +142,7 @@ def fetch_pair(pair: str) -> Optional[Dict[str, Any]]:
         r = requests.get(url, headers=HEADERS, timeout=HTTP_TIMEOUT)
         r.raise_for_status()
         j = r.json()
-        p = (j.get("pairs") or [None])[0] or None
-        return p
+        return (j.get("pairs") or [None])[0] or None
     except Exception:
         return None
 
@@ -163,7 +156,7 @@ def extract_volumes(p: Dict[str, Any]) -> Dict[str, Optional[float]]:
     h1  = _f(vol.get("h1"))
     h6  = _f(vol.get("h6"))
     h24 = _f(vol.get("h24"))
-    m5  = _f(vol.get("m5"))  # può non essere presente su alcune pair
+    m5  = _f(vol.get("m5"))
     if h1 is None:
         if h6 is not None:
             h1 = h6 / 6.0
@@ -202,7 +195,6 @@ def trim_history(hist: List[Dict[str, Any]], now_ts: int) -> List[Dict[str, Any]
     return out
 
 def sum_window(hist: List[Dict[str, Any]], start_ts: int, end_ts: int) -> Optional[float]:
-    """Somma i campioni m5 con timestamp in (start_ts, end_ts]. (half-open per evitare doppio conteggio)"""
     if start_ts >= end_ts:
         return 0.0
     vals = [h["vol_m5"] for h in hist if start_ts < h["ts"] <= end_ts]
@@ -211,78 +203,48 @@ def sum_window(hist: List[Dict[str, Any]], start_ts: int, end_ts: int) -> Option
     return float(sum(vals))
 
 def count_window(hist: List[Dict[str, Any]], start_ts: int, end_ts: int) -> int:
-    """Conta campioni m5 in (start_ts, end_ts]."""
     return sum(1 for h in hist if start_ts < h["ts"] <= end_ts)
 
-def calc_vol30m_from_m5(prev_hist: List[Dict[str, Any]], now_ts: int, vol_m5: Optional[float]):
-    """
-    Aggiorna la history con il campione corrente e calcola:
-    - vol30_now: somma m5 negli ultimi 30 minuti
-    - vol30_prev: somma m5 nei 30 minuti precedenti
-    - cov_count: n° campioni negli ultimi 30' (copertura)
-    """
-    hist = trim_history(prev_hist or [], now_ts)
-    if vol_m5 is not None:
-        hist.append({"ts": now_ts, "vol_m5": float(vol_m5)})
-
-    start_now = now_ts - WIN_30M_SEC
-    end_now   = now_ts
-    start_prev = now_ts - 2*WIN_30M_SEC
-    end_prev   = now_ts - WIN_30M_SEC
-
-    vol30_now  = sum_window(hist, start_now, end_now)
-    vol30_prev = sum_window(hist, start_prev, end_prev)
-    cov_count  = count_window(hist, start_now, end_now)  # 6 = copertura piena
-
-    return hist, vol30_now, vol30_prev, cov_count
-
-# ---------- Message (tabellare unico) ---------- #
+# ---------- Message ---------- #
 
 def build_table_message(rows: List[Dict[str, Any]], note: str = "") -> str:
-    """
-    rows: list di dict con chiavi:
-      symbol, name, pair, vol_h1, vol30m, vol30m_prev, delta30_pct
-    """
-    # Ordina per Δ% decrescente (None va in coda)
     rows.sort(key=lambda r: (r.get("delta30_pct") if r.get("delta30_pct") is not None else -1e18), reverse=True)
 
     header = []
-    header.append("⏱️ <b>VOLUME WATCH</b> — Vol(30m) esatto • Δ% ultimi 30’ vs 30’ precedenti")
+    header.append("⏱️ <b>VOLUME WATCH</b> — Vol(30m) • Δ% (ultimi 30’ vs 30’ precedenti)")
     header.append(f"<i>Aggiornato:</i> {htmlesc(now_iso_local())}")
     if note:
         header.append(htmlesc(note))
     header.append("")
 
-    # Tabella compatta: #, SYMBOL, Now30m, Δ%
     pre = []
     pre.append(f"{'#':>2}  {'SYMBOL':8} {'Now30m':>12} {'Δ%':>9}")
     pre.append("-"*40)
     for i, r in enumerate(rows, start=1):
         now30 = r.get("vol30m")
         vol1h = r.get("vol_h1")
-        now30_s = (
-            format_usd_int(now30) if now30 is not None
-            else ("~" + format_usd_int((vol1h or 0)/2.0) if vol1h is not None else "n.d.")
-        )
-        dpct_s = format_pct_signed(r.get("delta30_pct")) if now30 is not None else "n.d."
+        now_is_est = bool(r.get("now_is_estimate"))
+        if now30 is None:
+            now30_s = ("~" + format_usd_int((vol1h or 0)/2.0) if vol1h is not None else "n.d.")
+        else:
+            base = format_usd_int(now30)
+            now30_s = ("~" + base) if now_is_est else base
+
+        dpct_s = format_pct_signed(r.get("delta30_pct"))
         sym = (r.get("symbol") or "")[:8]
         pre.append(f"{i:>2}. {sym:<8} {now30_s:>12} {dpct_s:>9}")
 
-    parts = []
-    parts.append("\n".join(header))
-    parts.append("<pre>" + "\n".join(pre) + "</pre>")
-    # Nessun blocco dettagli, niente "Copertura", niente riga "Vol30m ora:"
-    return "\n\n".join(parts)
+    return "\n\n".join(["\n".join(header), "<pre>" + "\n".join(pre) + "</pre>"])
 
 # ---------- Main ---------- #
 
 def main():
-    ap = argparse.ArgumentParser(description="Volume watcher — Vol(30m) esatto da m5 + Δ% vs 30’ precedenti (tabellare)")
+    ap = argparse.ArgumentParser(description="Volume watcher — Vol(30m) + Δ% con m5 e fallback")
     ap.add_argument("--mode", choices=["from-screener", "from-file"], default="from-screener",
-                    help="Origine lista pair: 'from-screener' rilancia test4.py, 'from-file' legge JSON")
+                    help="Origine lista pair")
     ap.add_argument("--pairs-file", type=str, default="state/top_pairs.json",
                     help="File JSON con [{'symbol','name','pair'}...]")
-    # Parametri per test4.py quando mode=from-screener
+    # test4.py
     ap.add_argument("--python-bin", default=sys.executable)
     ap.add_argument("--min-liq", type=int, default=200000)
     ap.add_argument("--workers", type=int, default=12)
@@ -292,29 +254,30 @@ def main():
     ap.add_argument("--rps-ds", type=float, default=2.0)
     ap.add_argument("--funnel-show", type=int, default=100)
     ap.add_argument("--skip-unchanged-days", type=int, default=0)
-    # Filtro/qualità calcolo Vol(30m) e Δ%
+    # qualità/filtro e stima
     ap.add_argument("--min-cov", type=int, default=0,
-                    help="Min # di campioni m5 richiesti negli ultimi 30' (0..6). Se non soddisfatto: usa ~h1/2 e Δ% n.d.")
+                    help="Min # campioni m5 negli ultimi 30' (0..6) per Δ% STRICT")
     ap.add_argument("--threshold-x", type=float, default=0.0,
-                    help="Se > 0, mostra solo le pair con |Δ%| >= soglia (in punti percentuali). 0 = disabilitato.")
-    # Invio Telegram
-    ap.add_argument("--send-telegram", action="store_true", help="Se presente, invia il messaggio a Telegram (singolo)")
+                    help="Mostra solo |Δ%| >= soglia (0=disabilitato)")
+    ap.add_argument("--delta-mode", choices=["strict", "approx"], default="approx",
+                    help="Calcolo Δ%: strict=solo m5 completi; approx=stima con scaling/h1")
+    # Telegram
+    ap.add_argument("--send-telegram", action="store_true")
     ap.add_argument("--tg-parse-mode", default="HTML",
-                    choices=["HTML", "MarkdownV2", "Markdown"], help="Parse mode Telegram")
-    ap.add_argument("--tg-token", default=None, help="Override TG_BOT_TOKEN (altrimenti legge da env)")
-    ap.add_argument("--tg-chat", default=None, help="Override TG_CHAT_ID (altrimenti legge da env)")
+                    choices=["HTML", "MarkdownV2", "Markdown"])
+    ap.add_argument("--tg-token", default=None)
+    ap.add_argument("--tg-chat", default=None)
     args = ap.parse_args()
 
-    # Sanity bounds per i nuovi flag (per compat con run che passano valori fuori range)
-    min_cov = max(0, min(int(args.min_cov), 6))  # 0..6 (campioni da 5' in 30')
+    min_cov = max(0, min(int(args.min_cov), 6))
     threshold_x = max(0.0, float(args.threshold_x))
+    delta_mode = args.delta_mode
 
-    # 1) Carica lista pair
+    # 1) Lista pair
     pairs: List[Dict[str, Any]] = []
     if args.mode == "from-file":
         try:
-            pairs_path = Path(args.pairs_file)
-            data = json.loads(pairs_path.read_text(encoding="utf-8"))
+            data = json.loads(Path(args.pairs_file).read_text(encoding="utf-8"))
         except Exception:
             data = []
         pairs = [{"symbol": d.get("symbol"), "name": d.get("name"), "pair": d.get("pair")} for d in (data or [])]
@@ -332,7 +295,6 @@ def main():
                 skip_unchanged_days=args.skip_unchanged_days,
             )
             pairs = parse_top_only(stdout)
-            # Salva la lista TOP per fallback
             ensure_dir("state")
             Path("state/top_pairs.json").write_text(json.dumps(pairs, ensure_ascii=False), encoding="utf-8")
         except subprocess.CalledProcessError as e:
@@ -341,11 +303,10 @@ def main():
                 print(e.stdout); print(e.stderr, file=sys.stderr)
             except Exception:
                 pass
-            # Fallback al file salvato
             try:
                 data = json.loads(Path(args.pairs_file).read_text(encoding="utf-8"))
                 pairs = [{"symbol": d.get("symbol"), "name": d.get("name"), "pair": d.get("pair")} for d in (data or [])]
-                print(f"Fallback: caricata lista TOP da {args.pairs_file} ({len(pairs)} pairs).", file=sys.stderr)
+                print(f"Fallback: caricata lista TOP da {args.pairs_file} ({len(pairs)}).", file=sys.stderr)
             except Exception:
                 pairs = []
 
@@ -356,7 +317,7 @@ def main():
         print(msg)
         return
 
-    # 2) Per-pair: fetch, calcola Vol(30m) da m5, Δ% vs prev, salva stato
+    # 2) Per-pair
     rows: List[Dict[str, Any]] = []
     state_dir = Path("state/volwatch")
     ensure_dir(str(state_dir))
@@ -373,61 +334,83 @@ def main():
         prev = load_prev_state(state_path) or {}
         prev_hist = prev.get("m5_history") or []
 
-        hist, vol30_now, vol30_prev, cov_count = calc_vol30m_from_m5(prev_hist, now_ts, vol_m5)
+        # aggiorna history
+        hist = trim_history(prev_hist, now_ts)
+        if vol_m5 is not None:
+            hist.append({"ts": now_ts, "vol_m5": float(vol_m5)})
 
-        # Se copertura insufficiente, forza fallback (~h1/2) e Δ% n.d.
-        if cov_count < min_cov:
-            vol30_now = None
-            vol30_prev = None
-            delta30_pct = None
+        # finestra ora e precedente
+        start_now  = now_ts - WIN_30M_SEC
+        end_now    = now_ts
+        start_prev = now_ts - 2*WIN_30M_SEC
+        end_prev   = now_ts - WIN_30M_SEC
+
+        now_sum  = sum_window(hist, start_now, end_now)
+        prev_sum = sum_window(hist, start_prev, end_prev)
+        cov_now  = count_window(hist, start_now, end_now)
+        cov_prev = count_window(hist, start_prev, end_prev)
+
+        now_val = now_sum
+        prev_val = prev_sum
+        now_is_est = False
+
+        delta30 = None
+
+        if delta_mode == "strict":
+            # richiede copertura sufficiente
+            if cov_now >= min_cov and now_sum is not None and prev_sum is not None and prev_sum != 0:
+                delta30 = (float(now_sum) - float(prev_sum)) / float(prev_sum) * 100.0
         else:
-            delta30_pct = None
-            if vol30_now is not None and vol30_prev is not None:
-                try:
-                    delta_abs = float(vol30_now) - float(vol30_prev)
-                    if vol30_prev != 0:
-                        delta30_pct = (delta_abs / float(vol30_prev)) * 100.0
-                except Exception:
-                    delta30_pct = None
+            # approx: stima se copertura parziale
+            if now_val is None and cov_now > 0:
+                now_val = float(now_sum or 0.0) * (6.0 / float(cov_now))
+                now_is_est = True
+            if prev_val is None and cov_prev > 0:
+                prev_val = float(prev_sum or 0.0) * (6.0 / float(cov_prev))
+            # riempimento con h1 se una delle due manca
+            if now_val is None and prev_val is not None and vol_h1 is not None:
+                now_val = max(float(vol_h1) - float(prev_val), 0.0)
+                now_is_est = True
+            if prev_val is None and now_val is not None and vol_h1 is not None:
+                prev_val = max(float(vol_h1) - float(now_val), 0.0)
+            # calcolo Δ%
+            try:
+                if now_val is not None and prev_val is not None and float(prev_val) != 0.0:
+                    delta30 = (float(now_val) - float(prev_val)) / float(prev_val) * 100.0
+            except Exception:
+                delta30 = None
 
-        save_state(state_path, {
-            "ts": now_ts, "vol_h1": vol_h1, "m5_history": hist,
-        })
+        save_state(state_path, {"ts": now_ts, "vol_h1": vol_h1, "m5_history": hist})
 
         rows.append({
-            "symbol": sym,
-            "name": name,
-            "pair": pair,
+            "symbol": sym, "name": name, "pair": pair,
             "vol_h1": vol_h1,
-            "vol30m": vol30_now,        # ultimi 30'
-            "vol30m_prev": vol30_prev,  # 30' precedenti
-            "delta30_pct": delta30_pct, # differenza in %
-            "cov_count": cov_count,     # per eventuali debug / uso futuro
+            "vol30m": now_val if (delta_mode == "approx" and now_is_est) or now_sum is not None else now_sum,
+            "vol30m_prev": prev_val if delta_mode == "approx" else prev_sum,
+            "delta30_pct": delta30,
+            "cov_count": cov_now,
+            "now_is_estimate": now_is_est if delta_mode == "approx" else False,
         })
 
-    # 2b) Applica eventuale filtro per soglia Δ%
+    # filtro |Δ%|
     rows_for_table = rows
     if threshold_x > 0:
         filtered = [r for r in rows if (r.get("delta30_pct") is not None and abs(r["delta30_pct"]) >= threshold_x)]
-        # Se il filtro non restituisce nulla, non nascondere tutto: mostra comunque l'elenco completo
-        if filtered:
-            rows_for_table = filtered
+        rows_for_table = filtered or rows
 
-    # 3) Costruisci messaggio HTML tabellare e salva
-    ensure_dir("state/telegram")
+    # nota in header
     note_bits = []
-    if threshold_x > 0:
-        note_bits.append(f"Filtro: |Δ%| ≥ {threshold_x:.2f}")
-    if min_cov > 0:
-        note_bits.append(f"Min copertura m5 ≥ {min_cov}/6 campioni")
+    if threshold_x > 0: note_bits.append(f"Filtro: |Δ%| ≥ {threshold_x:.2f}")
+    if min_cov > 0 and delta_mode == "strict": note_bits.append(f"Strict min-cov {min_cov}/6")
+    if delta_mode == "approx": note_bits.append("Δ%≈ stimata con m5/h1 • ~Now=stima")
     note = " • ".join(note_bits)
 
+    ensure_dir("state/telegram")
     html = build_table_message(rows_for_table, note=note)
     out_path = Path("state/telegram/msg_volwatch.html")
     out_path.write_text(html, encoding="utf-8")
     print(f"OK: scritto {out_path} ({len(html)} chars)")
 
-    # 4) Invio Telegram (opzionale, singolo)
     if args.send_telegram:
         token = args.tg_token or os.environ.get("TG_BOT_TOKEN", "")
         chat  = args.tg_chat  or os.environ.get("TG_CHAT_ID", "")
