@@ -23,6 +23,10 @@ Env opzionali:
   YWF_WINDOW_SLACK=90           (secondi extra su to_ts per evitare "finestra che scappa")
   YWF_RPS=2                     (rate-limit client HTTP, req/sec)
 
+  
+
+python young_whale_finder.py --token 0x48a18A4782b65a0fBed4dcA608BB28038B7bE339 --minutes 2 --min-usd 400 --young-days 500
+
 Dipendenze:
   pip install requests tenacity rich
 """
@@ -41,7 +45,8 @@ import requests
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
 # -------------------- Logging -------------------- #
-
+YWF_BUDGET_CALLS="60"
+YWF_WINDOW_SLACK="90"
 import logging
 LOG_LEVEL = os.getenv("YWF_LOG", "info").upper()
 LEVEL = {"DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING, "WARN": logging.WARNING}.get(LOG_LEVEL, logging.INFO)
@@ -59,7 +64,7 @@ log = logging.getLogger("ywf")
 # -------------------- Config -------------------- #
 
 # Moralis: usata al MINIMO indispensabile
-MORALIS_API_KEY = os.getenv("MORALIS_API_KEY", "").strip() or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6ImIxYjNmZjA0LWViNTItNGFlYy1iNzg3LTg5MmYyNTg3MWIzYyIsIm9yZ0lkIjoiNDgwMDg5IiwidXNlcklkIjoiNDkzOTA4IiwidHlwZUlkIjoiNDZjMTgwOTktZmI2NC00MGFlLTlkODktZWY1NDRlNzQ4NzAwIiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NjI1Mjk0MDEsImV4cCI6NDkxODI4OTQwMX0.EuoHs5sg6ljIZeY6oWYOGzrOyCDcMIJGZlzPU0DdCzI"
+MORALIS_API_KEY = os.getenv("MORALIS_API_KEY", "").strip() or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6IjU1NTM2ZGQ4LWFmMTUtNDVhYS1iNTVjLTE1ODBmMzE3NmJjNiIsIm9yZ0lkIjoiNDgwMDkwIiwidXNlcklkIjoiNDkzOTA5IiwidHlwZUlkIjoiYmMyN2Y1ZTgtYjIzYi00YzU4LWJhNTItZDZmYjI3MGEwODJlIiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NjI1MzAzMjEsImV4cCI6NDkxODI5MDMyMX0.U6U_rtg6HszAbpLqoqTC2mw1XLAxV6xIo0Ryq6P5_R8"
 MORALIS_BASE = "https://deep-index.moralis.io/api/v2.2"
 
 # Free API (DexScreener)
