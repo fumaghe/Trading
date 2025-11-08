@@ -17,7 +17,7 @@ jobs:
       TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
       MORALIS_API_KEY: ${{ secrets.MORALIS_API_KEY }}
 
-      # Opzionali (puoi personalizzarli nei secrets o qui):
+      # Opzionali:
       YWF_LOG: info
       YWF_FAST: "1"                 # limiti dinamici ON
       YWF_TOPK: "20"
@@ -63,7 +63,8 @@ jobs:
           mkdir -p out
 
           EXIT_CODE=0
-          for SYM in "${!TOKENS[@]}"; do
+          # ordine fisso
+          for SYM in AIA BLESS B2 LA; do
             ADDR="${TOKENS[$SYM]}"
             echo "Running ${SYM} (${ADDR})"
             CMD="python young_whale_finder.py \
@@ -83,6 +84,19 @@ jobs:
             mv "out/tmp-${SYM}.json" "$OUTJSON"
             tr -d '\000' < "$ERRFILE" > "out/err-${SYM}.san.txt" || true
             mv "out/err-${SYM}.san.txt" "$ERRFILE"
+
+            # Debug: conteggio results + stats + prime righe stderr
+            if command -v jq >/dev/null 2>&1; then
+              COUNT=$(jq -r '(.results|length) // 0' "$OUTJSON" 2>/dev/null || echo 0)
+              echo "[DEBUG] ${SYM}: results=$COUNT"
+              echo -n "[DEBUG] ${SYM}: stats=" 
+              jq -r '" kept=\(.stats.wallet_tenuti // 0) buys_ge_min=\(.stats.buys_ge_min_usd // 0) wallets_seen=\(.stats.wallet_unici_ge_min_usd // 0)"' "$OUTJSON" 2>/dev/null || true
+            else
+              echo "[WARN] jq non disponibile; salto debug JSON."
+            fi
+            echo "[DEBUG] ${SYM}: first 20 lines of stderr:"
+            head -n 20 "$ERRFILE" || true
+            echo "----------------------------------------"
           done
 
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
@@ -106,12 +120,14 @@ jobs:
               try:
                   with open(f, "r", encoding="utf-8") as fh:
                       j = json.load(fh)
-              except Exception:
+              except Exception as e:
+                  print(f"[DEBUG] skip {f}: {e}")
                   continue
 
               sym = j.get("symbol") or os.path.basename(f).split("-")[1].split(".")[0]
               results = j.get("results") or []
               if not results:
+                  print(f"[DEBUG] {sym}: nessun results nel JSON {f}")
                   continue
 
               for r in results:
@@ -127,10 +143,11 @@ jobs:
                   lines.append(f"Balance USD: <b>{fmt_money(balu)}</b>")
                   txt = "\n".join(lines)
 
-                  # salva messaggio
                   idx = total_msgs + 1
-                  with open(f"out/msgs/msg_{idx:03d}.html", "w", encoding="utf-8") as m:
+                  out_path = f"out/msgs/msg_{idx:03d}.html"
+                  with open(out_path, "w", encoding="utf-8") as m:
                       m.write(txt)
+                  print(f"[DEBUG] msg creato per {sym}: {addr} -> {out_path}")
                   total_msgs += 1
 
           # flag file se non ci sono messaggi
