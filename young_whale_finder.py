@@ -27,17 +27,23 @@ from typing import Dict, List, Optional, Tuple
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
 
-# -------------------- Logging -------------------- #
+# -------------------- Logging (su STDERR per tenere stdout pulito) -------------------- #
 import logging
 LOG_LEVEL = os.getenv("YWF_LOG", "info").upper()
 LEVEL = {"DEBUG": logging.DEBUG, "INFO": logging.INFO, "WARNING": logging.WARNING, "WARN": logging.WARNING}.get(LOG_LEVEL, logging.INFO)
 
 try:
     from rich.logging import RichHandler
-    logging.basicConfig(level=LEVEL, format="%(message)s", datefmt="[%X]", handlers=[RichHandler(rich_tracebacks=False)])
+    from rich.console import Console
+    logging.basicConfig(
+        level=LEVEL,
+        format="%(message)s",
+        datefmt="[%X]",
+        handlers=[RichHandler(console=Console(file=sys.stderr), rich_tracebacks=False)]
+    )
     RICH = True
 except Exception:
-    logging.basicConfig(level=LEVEL, format="%(asctime)s | %(levelname)s | %(message)s")
+    logging.basicConfig(level=LEVEL, format="%(asctime)s | %(levelname)s | %(message)s", stream=sys.stderr)
     RICH = False
 
 log = logging.getLogger("ywf")
@@ -142,7 +148,7 @@ class DiskCache:
 
 CACHE = DiskCache(CACHE_PATH)
 
-# -------------------- Names helpers (FIX) -------------------- #
+# -------------------- Names helpers -------------------- #
 
 def load_names_list(path: str) -> List[str]:
     """Carica la lista nomi da file; fallback a una lista di default."""
@@ -160,18 +166,15 @@ def get_or_assign_name(addr: str, names: List[str]) -> str:
     if current is not None:
         return str(current)
 
-    # nomi già usati (estrai solo il 'value' dalla cache)
     raw = CACHE.data.get("names") or {}
     used = set()
     for v in raw.values():
         used.add(v.get("value") if isinstance(v, dict) else v)
 
-    # scegli random tra i nomi non usati
     available = [n for n in names if n not in used]
     if available:
         candidate = random.SystemRandom().choice(available)
     else:
-        # fallback: crea un nome unico con suffisso
         base = random.SystemRandom().choice(names)
         i = 2
         candidate = base
@@ -181,7 +184,6 @@ def get_or_assign_name(addr: str, names: List[str]) -> str:
 
     CACHE.set("names", addr, candidate)
     return candidate
-
 
 # -------------------- HTTP & Budget -------------------- #
 

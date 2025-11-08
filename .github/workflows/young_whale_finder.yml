@@ -85,11 +85,31 @@ jobs:
             tr -d '\000' < "$ERRFILE" > "out/err-${SYM}.san.txt" || true
             mv "out/err-${SYM}.san.txt" "$ERRFILE"
 
+            # --- Isola l'oggetto JSON pulito da eventuali log su stdout ---
+            OUT="$OUTJSON" python - << 'PY' || true
+import os, json
+fn = os.environ["OUT"]
+data = open(fn, "r", encoding="utf-8", errors="ignore").read()
+start = data.find("{")
+end   = data.rfind("}")
+if start != -1 and end != -1 and end >= start:
+    blob = data[start:end+1]
+    try:
+        json.loads(blob)
+        open(fn, "w", encoding="utf-8").write(blob)
+        print(f"[DEBUG] JSON isolato e valido in {fn}")
+    except Exception as e:
+        print(f"[WARN] JSON non valido dopo isolamento in {fn}: {e}")
+else:
+    print(f"[WARN] Nessun blocco JSON trovato in {fn}")
+PY
+            # --------------------------------------------------------------
+
             # Debug: conteggio results + stats + prime righe stderr
             if command -v jq >/dev/null 2>&1; then
               COUNT=$(jq -r '(.results|length) // 0' "$OUTJSON" 2>/dev/null || echo 0)
               echo "[DEBUG] ${SYM}: results=$COUNT"
-              echo -n "[DEBUG] ${SYM}: stats=" 
+              echo -n "[DEBUG] ${SYM}: stats="
               jq -r '" kept=\(.stats.wallet_tenuti // 0) buys_ge_min=\(.stats.buys_ge_min_usd // 0) wallets_seen=\(.stats.wallet_unici_ge_min_usd // 0)"' "$OUTJSON" 2>/dev/null || true
             else
               echo "[WARN] jq non disponibile; salto debug JSON."
@@ -135,7 +155,6 @@ jobs:
                   addr = r.get("address","")
                   balu = r.get("balance_usd")
                   bought = r.get("sum_buys_usd_window")
-                  # Messaggio per singolo wallet
                   lines = []
                   lines.append(f"<b>{html.escape(sym)}</b> — <b>{html.escape(user)}</b> <i>(possibile wallet whale)</i>")
                   lines.append(f"Acquisti nella finestra: <b>{fmt_money(bought)}</b>")
@@ -150,7 +169,6 @@ jobs:
                   print(f"[DEBUG] msg creato per {sym}: {addr} -> {out_path}")
                   total_msgs += 1
 
-          # flag file se non ci sono messaggi
           with open("out/msgs/COUNT.txt","w",encoding="utf-8") as f:
               f.write(str(total_msgs))
           PY
