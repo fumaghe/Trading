@@ -7,30 +7,10 @@ Young Whale Finder — BSC (Moralis-min, DexScreener-first) — STABLE TOKEN-FIR
 - Balance SEMPRE aggiornato (no cache di default)
 - First-tx via /wallets/{address}/history (affidabile) con cache 1y
 - Filtro extra: escludi wallet con balance_usd < 1
+- Assegnazione nome utente pseudo-random da file nomi.txt, con cache per address
 
 Uso:
   python young_whale_finder.py --token 0x... --minutes 5 --min-usd 500 --young-days 3
-
-Parametri CLI:
-  --token       Indirizzo ERC-20 (BSC)
-  --minutes     Finestra in minuti (recupera TUTTE le tx nella finestra)
-  --min-usd     Soglia minima USD per considerare un BUY (filtrata SUBITO)
-  --young-days  Filtra i wallet più "giovani" di N giorni (default: da env/config)
-
-Env consigliati (defaults già impostati sotto):
-  YWF_LOG=debug|info|warning        (default: info)
-  YWF_FAST=1                        (riduce TOPK/MAX_SWAPS dinamicamente)
-  YWF_TOPK=20                       (wallet max per enrichment)
-  YWF_TARGET_WALLETS=12             (stop scan quando hai >= N wallet unici)
-  YWF_BUDGET_CALLS=60               (hard cap di chiamate Moralis per run)
-  YWF_NO_DTB=1                      (salta dateToBlock: filtri solo timestamp)
-  YWF_CACHE=ywf_cache.json          (path cache JSON)
-  YWF_WINDOW_SLACK=90               (secondi extra su to_ts)
-  YWF_RPS=2                         (rate-limit client HTTP, req/sec)
-  YWF_BALANCE_TTL=0                 (0 = no cache su balance => sempre fresco)
-
-Dipendenze:
-  pip install requests tenacity rich
 """
 
 from __future__ import annotations
@@ -40,6 +20,7 @@ import json
 import os
 import sys
 import time
+import random
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional, Tuple
 
@@ -64,7 +45,7 @@ log = logging.getLogger("ywf")
 # -------------------- Config (stable defaults) -------------------- #
 
 # Moralis
-MORALIS_API_KEY = os.getenv("MORALIS_API_KEY", "").strip() or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6IjU1NTM2ZGQ4LWFmMTUtNDVhYS1iNTVjLTE1ODBmMzE3NmJjNiIsIm9yZ0lkIjoiNDgwMDkwIiwidXNlcklkIjoiNDkzOTA5IiwidHlwZUlkIjoiYmMyN2Y1ZTgtYjIzYi00YzU4LWJhNTItZDZmYjI3MGEwODJlIiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NjI1MzAzMjEsImV4cCI6NDkxODI5MDMyMX0.U6U_rtg6HszAbpLqoqTC2mw1XLAxV6xIo0Ryq6P5_R8"
+MORALIS_API_KEY = os.getenv("MORALIS_API_KEY", "").strip() or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6Ijg3YTE1YmJmLWY5NmItNDY5ZS04MWViLTUyMWExNWUxNWU2NSIsIm9yZ0lkIjoiMzU5OTMzIiwidXNlcklkIjoiMzY5OTEzIiwidHlwZUlkIjoiYjVkN2Q2YjctNGM4ZC00NjRhLWIyNGMtMjU2MTk0NzJmNGE5IiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NjI1MzAzMDUsImV4cCI6NDkxODI5MDMwNX0.YPGGVEguNqhoy-5bE0k-3BBhMdvKNWxorjh4HFdgh1I"
 MORALIS_BASE = "https://deep-index.moralis.io/api/v2.2"
 
 # Free API (DexScreener)
@@ -73,7 +54,7 @@ DEXSCREENER_TOKEN = "https://api.dexscreener.com/latest/dex/tokens/{address}"
 CHAIN = "bsc"
 
 # Defaults
-YOUNG_DAYS_DEFAULT = int(os.getenv("YWF_YOUNG_DAYS", "3"))     # richiesto: 3
+YOUNG_DAYS_DEFAULT = int(os.getenv("YWF_YOUNG_DAYS", "3"))
 RPS = float(os.getenv("YWF_RPS", "2"))
 HTTP_TIMEOUT = 25
 UA = "Mozilla/5.0 (YoungWhaleFinder/1.9-STABLE; +https://moralis.com)"
@@ -85,19 +66,22 @@ MAX_SWAPS = int(os.getenv("YWF_MAX_SWAPS", "2000"))
 BUDGET_CALLS = int(os.getenv("YWF_BUDGET_CALLS", "60"))
 WINDOW_SLACK_SEC = int(os.getenv("YWF_WINDOW_SLACK", "90"))
 
-if os.getenv("YWF_FAST", "1") == "1":                 # ON di default
+if os.getenv("YWF_FAST", "1") == "1":
     TOP_K = max(8, min(TOP_K, 20))
     MAX_SWAPS = max(300, min(MAX_SWAPS, 1200))
 
-SKIP_DATE_TO_BLOCK = os.getenv("YWF_NO_DTB", "1") == "1"  # ON di default
+SKIP_DATE_TO_BLOCK = os.getenv("YWF_NO_DTB", "1") == "1"
 
 # Cache
 CACHE_PATH = os.getenv("YWF_CACHE", "ywf_cache.json")
-TTL_BLOCK = 600                # 10 min
-TTL_PRICE_MORALIS = 120        # 2 min
+TTL_BLOCK = 600
+TTL_PRICE_MORALIS = 120
 TTL_METADATA = 30 * 86400
-TTL_FIRST_TX = 365 * 86400     # 1 anno
-TTL_BALANCE = int(os.getenv("YWF_BALANCE_TTL", "0"))  # 0 = no cache => balance sempre aggiornato
+TTL_FIRST_TX = 365 * 86400
+TTL_BALANCE = int(os.getenv("YWF_BALANCE_TTL", "0"))
+
+# Names file
+NAMES_FILE = os.getenv("YWF_NAMES_FILE", "nomi.txt")
 
 # -------------------- Utils & Cache -------------------- #
 
@@ -119,7 +103,7 @@ class DiskCache:
     def __init__(self, path: str):
         self.path = path
         self.data = {"date_to_block":{}, "metadata":{}, "price_moralis":{},
-                     "first_tx_ts":{}, "balance":{}}
+                     "first_tx_ts":{}, "balance":{}, "names":{}}
         try:
             if os.path.exists(path):
                 with open(path, "r", encoding="utf-8") as f:
@@ -157,6 +141,47 @@ class DiskCache:
             log.warning(f"Cache save failed: {e}")
 
 CACHE = DiskCache(CACHE_PATH)
+
+# -------------------- Names helpers (FIX) -------------------- #
+
+def load_names_list(path: str) -> List[str]:
+    """Carica la lista nomi da file; fallback a una lista di default."""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            names = [line.strip() for line in f if line.strip()]
+        if names:
+            return names
+    except Exception as e:
+        log.warning(f"Impossibile leggere {path}: {e}. Uso lista nomi di default.")
+    return ["Topolino", "Paperino", "Pippo", "Minnie", "Paperina", "Pluto"]
+
+def get_or_assign_name(addr: str, names: List[str]) -> str:
+    current = CACHE.get("names", addr, ttl=None)
+    if current is not None:
+        return str(current)
+
+    # nomi già usati (estrai solo il 'value' dalla cache)
+    raw = CACHE.data.get("names") or {}
+    used = set()
+    for v in raw.values():
+        used.add(v.get("value") if isinstance(v, dict) else v)
+
+    # scegli random tra i nomi non usati
+    available = [n for n in names if n not in used]
+    if available:
+        candidate = random.SystemRandom().choice(available)
+    else:
+        # fallback: crea un nome unico con suffisso
+        base = random.SystemRandom().choice(names)
+        i = 2
+        candidate = base
+        while candidate in used:
+            candidate = f"{base}{i}"
+            i += 1
+
+    CACHE.set("names", addr, candidate)
+    return candidate
+
 
 # -------------------- HTTP & Budget -------------------- #
 
@@ -314,7 +339,6 @@ PANCAKE_TXT_FIELDS = ("exchangeName","exchange","dex","dexName","factoryName","l
 PAIR_FIELDS = ("pairAddress","poolAddress","liquidityPoolAddress","lpAddress","pair","pool")
 
 def is_pancake_swap(s: dict, main_pair_hint: Optional[str]) -> bool:
-    # 1) testo
     txt = " ".join(str(s.get(k) or "").lower() for k in PANCAKE_TXT_FIELDS)
     if "pancake" in txt:
         if main_pair_hint:
@@ -323,12 +347,10 @@ def is_pancake_swap(s: dict, main_pair_hint: Optional[str]) -> bool:
                 if s.get(k): pa = s.get(k); break
             if isinstance(pa, str) and pa.strip().lower() == main_pair_hint.strip().lower():
                 return True
-            # se non c'è pair nel record, accetta lo stesso (è Pancake)
             if pa is None:
                 return True
         else:
             return True
-    # 2) pair match esplicito
     if main_pair_hint:
         pa = None
         for k in PAIR_FIELDS:
@@ -353,12 +375,6 @@ def calc_usd_from_swap(s: dict, price_usd: Optional[float]) -> Optional[float]:
 # -------------------- Swaps iterator (TOKEN-FIRST) -------------------- #
 
 def iterate_swaps_token_first(token: str, main_pair: Optional[str], from_ts: int, to_ts: int):
-    """
-    Paginazione DESC di /erc20/{token}/swaps con filtro Pancake e (se disponibile) main_pair.
-    Early-stop:
-      - continua se pagina tutta > to_ts
-      - termina quando otteniamo 2 pagine consecutive tutte < from_ts
-    """
     cursor = None
     page = 0
     consecutive_old_pages = 0
@@ -391,7 +407,6 @@ def iterate_swaps_token_first(token: str, main_pair: Optional[str], from_ts: int
                     page_all_before = False; any_in_window = True; ts_ok = True
             if not ts_ok:
                 continue
-            # filtro Pancake + pair
             if not is_pancake_swap(s, main_pair):
                 continue
             yield s
@@ -453,7 +468,7 @@ def parse_args():
     ap = argparse.ArgumentParser(description="Young Whale Finder (BSC; Moralis-min; DexScreener-first; TOKEN-FIRST)")
     ap.add_argument("--token", required=True, help="Token address (BSC)")
     ap.add_argument("--minutes", type=int, default=5, help="Finestra in minuti")
-    ap.add_argument("--min-usd", type=float, default=500.0, help="Soglia minima USD per BUY")  # richiesto: 500
+    ap.add_argument("--min-usd", type=float, default=500.0, help="Soglia minima USD per BUY")
     ap.add_argument("--young-days", type=int, default=YOUNG_DAYS_DEFAULT, help="Filtra wallet più giovani di N giorni")
     return ap.parse_args()
 
@@ -469,19 +484,16 @@ def main():
 
     log.info(f"Start | token={token} minutes={minutes} min_usd={min_usd} young_days={YOUNG_DAYS} | TOP_K={TOP_K} MAX_SWAPS={MAX_SWAPS} budget_calls={BUDGET_CALLS} log={LOG_LEVEL.lower()}")
 
-    # Finestra
     now = datetime.now(timezone.utc)
     from_dt = now - timedelta(minutes=minutes)
     from_iso = from_dt.isoformat().replace("+00:00", "Z")
     to_iso   = now.isoformat().replace("+00:00", "Z")
     from_ts = int(from_dt.timestamp()); to_ts = int(now.timestamp()) + WINDOW_SLACK_SEC
 
-    # Gratis: DexScreener main pair + price
     sym, dec = get_token_metadata_cached(token)
     main_pair, ds_price, m5_buys, m5_sells, liq = dexscreener_pick_pancake_and_activity(token)
     price_usd = ds_price; price_source = "dexscreener"
 
-    # Fallback prezzo (Moralis) SOLO se serve
     if price_usd is None:
         try:
             price_usd = get_token_price_usd_moralis_cached(token)
@@ -491,7 +503,6 @@ def main():
             price_usd = None
             price_source = "none"
 
-    # dateToBlock opzionale (non necessario con filtro timestamp)
     if SKIP_DATE_TO_BLOCK:
         from_blk = None; to_blk = None
         log.info("NO_DTB attivo: timestamp-only + early-stop.")
@@ -507,7 +518,6 @@ def main():
 
     log.info(f"Token: {sym} (dec={dec}) | price={price_usd} [{price_source}] | window {from_iso} → {to_iso}")
 
-    # Limiti dinamici (stima dai m5 buys gratuiti)
     TK = TOP_K
     MAX = MAX_SWAPS
     if m5_buys is not None and m5_buys >= 0:
@@ -518,7 +528,6 @@ def main():
             log.info(f"Dynamic limits: MAX_SWAPS {MAX}→{dyn_cap}, TOP_K {TK}→{dyn_topk}")
             MAX = dyn_cap; TK = dyn_topk
 
-    # Scan swaps (TOKEN-FIRST)
     buyers_sum_usd: Dict[str, float] = {}
     total_swaps = total_swaps_pancake = total_buys_ge_min = 0
     c_not_buy = c_not_pancake = c_below_min = c_no_wallet = 0
@@ -532,7 +541,6 @@ def main():
         for s in iterator:
             total_swaps += 1
 
-            # tipo
             tx_type = str(_first_key(s, ["transactionType","type","side","action"], "")).lower()
             if tx_type != "buy":
                 c_not_buy += 1
@@ -541,7 +549,6 @@ def main():
 
             total_swaps_pancake += 1
 
-            # USD (subito) con fallback calcolato
             usd_val = calc_usd_from_swap(s, price_usd)
             if usd_val is None or usd_val < min_usd:
                 c_below_min += 1
@@ -549,7 +556,6 @@ def main():
                 continue
             total_buys_ge_min += 1
 
-            # wallet
             wallet = _first_key(s, ["walletAddress","trader","maker","sender","fromAddress","from","buyer","recipient","toAddress","to"])
             if not wallet:
                 c_no_wallet += 1
@@ -558,7 +564,6 @@ def main():
 
             buyers_sum_usd[str(wallet)] = buyers_sum_usd.get(str(wallet), 0.0) + float(usd_val)
 
-            # Early-stop: TOP-K stabile
             if total_swaps % 200 == 0:
                 current_top = [w for w,_ in sorted(buyers_sum_usd.items(), key=lambda kv: kv[1], reverse=True)[:TK]]
                 if current_top == last_top_wallets:
@@ -570,7 +575,6 @@ def main():
                     log.info("Early-stop: TOP-K stabile, fermo la scansione.")
                     break
 
-            # Early-stop: target wallets raggiunto
             if len(buyers_sum_usd) >= TARGET_WALLETS and total_swaps % 100 == 0:
                 log.info(f"Early-stop: raggiunto TARGET_WALLETS={TARGET_WALLETS}.")
                 break
@@ -585,9 +589,10 @@ def main():
     log.info(f"Swaps scanned={total_swaps} | pancake={total_swaps_pancake} | buys≥min={total_buys_ge_min} | wallets={len(buyers_sum_usd)}")
     log.debug(f"Filtered: not_buy={c_not_buy} not_pancake={c_not_pancake} below_min={c_below_min} no_wallet={c_no_wallet}")
 
-    # Top-K → enrichment (first_tx + balance fresh)
     top_wallets = sorted(buyers_sum_usd.items(), key=lambda kv: kv[1], reverse=True)[:TK]
     log.info(f"Evaluating first_tx + balance for TOP_K={len(top_wallets)} (of {len(buyers_sum_usd)})")
+
+    names_list = load_names_list(NAMES_FILE)
 
     young_cutoff_ts = int(now.timestamp()) - YOUNG_DAYS * 86400
     results: List[dict] = []
@@ -603,7 +608,6 @@ def main():
             log.debug(f"skip old wallet {addr} (first_tx={first_ts})")
             continue
 
-        # Balance sempre aggiornato
         try:
             bal_tok = get_wallet_token_balance_fresh(addr, token, dec)
         except BudgetExhausted as e:
@@ -611,14 +615,15 @@ def main():
 
         bal_usd = (price_usd or 0.0) * bal_tok if price_usd is not None else None
 
-        # ----------- NUOVO FILTRO: escludi se balance_usd < 1 -----------
         if bal_usd is None or bal_usd < 1.0:
             log.debug(f"skip low balance {addr} (balance_usd={bal_usd})")
             continue
-        # ----------------------------------------------------------------
+
+        user_name = get_or_assign_name(addr, names_list)
 
         results.append({
             "address": addr,
+            "user_name": user_name,
             "balance_token": bal_tok,
             "balance_usd": bal_usd,
             "first_tx_ts": first_ts,
