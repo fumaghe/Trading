@@ -70,7 +70,7 @@ jobs:
               --token ${ADDR} \
               --minutes 20 \
               --min-usd 600 \
-              --young-days 4"
+              --young-days 200"
             echo "CMD: $CMD"
 
             OUTJSON="out/out-${SYM}.json"
