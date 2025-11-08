@@ -69,9 +69,9 @@ jobs:
             echo "Running ${SYM} (${ADDR})"
             CMD="python young_whale_finder.py \
               --token ${ADDR} \
-              --minutes 20 \
+              --minutes 21 \
               --min-usd 600 \
-              --young-days 300"
+              --young-days 4"
             echo "CMD: $CMD"
 
             OUTJSON="out/out-${SYM}.json"
@@ -133,7 +133,7 @@ jobs:
                   balu = r.get("balance_usd")
                   bought = r.get("sum_buys_usd_window")
                   lines = []
-                  lines.append(f"<b>{html.escape(sym)}</b> — <b>{html.escape(user)}</b> <i>(possibile wallet whale)</i>")
+                  lines.append(f"<b>{html.escape(sym)}</b> — <b>{html.escape(user)}</b> <i>(Possible Whale Wallet 🐋)</i>")
                   lines.append(f"Acquisti nella finestra: <b>{fmt_money(bought)}</b>")
                   lines.append(f"Address: <code>{html.escape(addr)}</code>")
                   lines.append(f"Balance USD: <b>{fmt_money(balu)}</b>")
