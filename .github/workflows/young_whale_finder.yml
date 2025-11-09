@@ -46,7 +46,7 @@ jobs:
           python -m pip install --upgrade pip
           pip install requests tenacity rich
 
-      - name: Run YWF on 4 tokens (sequential)
+      - name: Run YWF on 5 tokens (sequential)
         id: ywf
         shell: bash
         run: |
@@ -59,12 +59,13 @@ jobs:
           TOKENS["BLESS"]="0x7C8217517ed4711fe2DECCdFefFE8d906b9Ae11F"
           TOKENS["B2"]="0x783c3f003f172c6Ac5AC700218a357d2D66Ee2a2"
           TOKENS["LA"]="0x389AD4bb96d0D6EE5B6eF0EFAF4b7db0bA2e02a0"
+          TOKENS["RIVER"]="0x7D6f2C4fB78B44527efeC5bd5F39D85b04c1c5a2"
 
           mkdir -p out
 
           EXIT_CODE=0
-          # ordine fisso
-          for SYM in AIA BLESS B2 LA; do
+          # ordine fisso (aggiunta RIVER)
+          for SYM in AIA BLESS B2 LA RIVER; do
             ADDR="${TOKENS[$SYM]}"
             echo "Running ${SYM} (${ADDR})"
             CMD="python young_whale_finder.py \
@@ -108,11 +109,16 @@ jobs:
           mkdir -p out/msgs
           python - << 'PY'
           import os, json, html, glob
+
+          # SOGLIA: non inviare se balance_usd < 20000
+          THRESHOLD = 20000.0
+
           def fmt_money(v):
               try:
                   return f"${float(v):,.2f}".replace(",", " ")
               except Exception:
                   return str(v)
+
           files = sorted(glob.glob("out/out-*.json"))
           total_msgs = 0
           for f in files:
@@ -122,28 +128,45 @@ jobs:
               except Exception as e:
                   print(f"[DEBUG] skip {f}: {e}")
                   continue
+
               sym = j.get("symbol") or os.path.basename(f).split("-")[1].split(".")[0]
               results = j.get("results") or []
               if not results:
                   print(f"[DEBUG] {sym}: nessun results nel JSON {f}")
                   continue
+
               for r in results:
                   user = r.get("user_name") or "Utente"
-                  addr = r.get("address","")
+                  addr = (r.get("address","") or "").strip()
                   balu = r.get("balance_usd")
+
+                  # --- FILTRO BILANCIO ---
+                  try:
+                      balf = float(balu)
+                  except Exception:
+                      balf = None
+                  if balf is None or balf < THRESHOLD:
+                      print(f"[DEBUG] skip {sym}: {addr} balance_usd={balu} < {THRESHOLD}")
+                      continue
+                  # ------------------------
+
                   bought = r.get("sum_buys_usd_window")
-                  lines = []
-                  lines.append(f"<b>{html.escape(sym)}</b> — <b>{html.escape(user)}</b> <i>(Possible Whale Wallet 🐋)</i>")
-                  lines.append(f"Acquisti nella finestra: <b>{fmt_money(bought)}</b>")
-                  lines.append(f"Address: <code>{html.escape(addr)}</code>")
-                  lines.append(f"Balance USD: <b>{fmt_money(balu)}</b>")
-                  txt = "\n".join(lines)
+
+                  # Messaggio HTML carino:
+                  header = f"🐋 <u>{html.escape(sym)}</u> — <b>{html.escape(user)}</b>"
+                  line_buys = f"Acquisti nella finestra: <b>{fmt_money(bought)}</b>"
+                  zerion_url = f"https://app.zerion.io/{html.escape(addr)}/overview"
+                  line_addr = f"Wallet: <a href=\"{zerion_url}\">{html.escape(addr)}</a>"
+                  line_bal = f"Balance USD: <b>{fmt_money(balu)}</b>"
+
+                  txt = "\n".join([header, line_buys, line_addr, line_bal])
                   idx = total_msgs + 1
                   out_path = f"out/msgs/msg_{idx:03d}.html"
                   with open(out_path, "w", encoding="utf-8") as m:
                       m.write(txt)
                   print(f"[DEBUG] msg creato per {sym}: {addr} -> {out_path}")
                   total_msgs += 1
+
           with open("out/msgs/COUNT.txt","w",encoding="utf-8") as f:
               f.write(str(total_msgs))
           PY
@@ -154,7 +177,7 @@ jobs:
         run: |
           COUNT=$(cat out/msgs/COUNT.txt 2>/dev/null || echo "0")
           if [ "$COUNT" = "0" ]; then
-            echo "Nessun wallet trovato: non invio nulla su Telegram."
+            echo "Nessun wallet trovato sopra soglia: non invio nulla su Telegram."
             exit 0
           fi
           API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
