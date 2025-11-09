@@ -108,7 +108,8 @@ jobs:
         run: |
           mkdir -p out/msgs
           python - << 'PY'
-          import os, json, html, glob
+          import os, json, html, glob, time
+          from datetime import datetime, timezone
 
           # SOGLIA: non inviare se balance_usd < 20000
           THRESHOLD = 20000.0
@@ -118,6 +119,12 @@ jobs:
                   return f"${float(v):,.2f}".replace(",", " ")
               except Exception:
                   return str(v)
+
+          def short_addr(a: str) -> str:
+              a = (a or "").strip()
+              if a.startswith("0x") and len(a) > 10:
+                  return a[:6] + "..." + a[-4:]
+              return a
 
           files = sorted(glob.glob("out/out-*.json"))
           total_msgs = 0
@@ -130,10 +137,18 @@ jobs:
                   continue
 
               sym = j.get("symbol") or os.path.basename(f).split("-")[1].split(".")[0]
+              token_addr = j.get("token") or ""
+              pair = j.get("main_pair_hint") or ""
               results = j.get("results") or []
               if not results:
                   print(f"[DEBUG] {sym}: nessun results nel JSON {f}")
                   continue
+
+              # Link DexScreener: preferisci pair; fallback alla pagina token
+              if pair:
+                  dex_url = f"https://dexscreener.com/bsc/{pair}"
+              else:
+                  dex_url = f"https://dexscreener.com/bsc/{token_addr}"
 
               for r in results:
                   user = r.get("user_name") or "Utente"
@@ -152,14 +167,33 @@ jobs:
 
                   bought = r.get("sum_buys_usd_window")
 
-                  # Messaggio HTML carino:
-                  header = f"🐋 <u>{html.escape(sym)}</u> — <b>{html.escape(user)}</b>"
+                  # Età wallet
+                  first_ts = r.get("first_tx_ts")
+                  age_line = ""
+                  if isinstance(first_ts, (int, float)) and first_ts > 0:
+                      days = max(0, int((time.time() - float(first_ts)) // 86400))
+                      iso_date = datetime.fromtimestamp(first_ts, tz=timezone.utc).strftime("%Y-%m-%d")
+                      age_line = f"<i>Wallet creato il {iso_date} — {days} giorni</i>"
+
+                  # Link Zerion + BscScan
+                  zerion_url = f"https://app.zerion.io/{addr}/overview"
+                  bscscan_url = f"https://bscscan.com/address/{addr}"
+                  addr_short = short_addr(addr)
+
+                  # Messaggio HTML:
+                  # Header: balena + coin sottolineata e linkata alla pair DexScreener
+                  header = f'🐋 <a href="{dex_url}"><u>{html.escape(sym)}</u></a> — <b>{html.escape(user)}</b>'
                   line_buys = f"Acquisti nella finestra: <b>{fmt_money(bought)}</b>"
-                  zerion_url = f"https://app.zerion.io/{html.escape(addr)}/overview"
-                  line_addr = f"Wallet: <a href=\"{zerion_url}\">{html.escape(addr)}</a>"
+                  line_addr = f'Wallet: <a href="{zerion_url}">{html.escape(addr_short)}</a>'
+                  line_addr_full = f'Zerion: <a href="{zerion_url}">{zerion_url}</a>'
+                  line_bscscan = f'BscScan: <a href="{bscscan_url}">{bscscan_url}</a>'
                   line_bal = f"Balance USD: <b>{fmt_money(balu)}</b>"
 
-                  txt = "\n".join([header, line_buys, line_addr, line_bal])
+                  pieces = [header, line_buys, line_addr, line_addr_full, line_bscscan, line_bal]
+                  if age_line:
+                      pieces.append(age_line)
+
+                  txt = "\n".join(pieces)
                   idx = total_msgs + 1
                   out_path = f"out/msgs/msg_{idx:03d}.html"
                   with open(out_path, "w", encoding="utf-8") as m:
