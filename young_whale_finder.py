@@ -66,7 +66,7 @@ HTTP_TIMEOUT = 25
 UA = "Mozilla/5.0 (YoungWhaleFinder/1.9-STABLE; +https://moralis.com)"
 
 TOP_K = int(os.getenv("YWF_TOPK", "20"))
-TARGET_WALLETS = int(os.getenv("YWF_TARGET_WALLETS", "12"))
+TARGET_WALLETS = int(os.getenv("YWF_TARGET_WALLETS", "22"))
 
 MAX_SWAPS = int(os.getenv("YWF_MAX_SWAPS", "2000"))
 BUDGET_CALLS = int(os.getenv("YWF_BUDGET_CALLS", "60"))
