@@ -178,22 +178,22 @@ jobs:
                       iso_date = datetime.fromtimestamp(first_ts, tz=timezone.utc).strftime("%Y-%m-%d")
                       age_line = f"<i>Wallet creato il {iso_date} — {days} giorni</i>"
 
-                  # Link Zerion + BscScan
+                  # Link Zerion
                   zerion_url = f"https://app.zerion.io/{addr}/overview"
-                  bscscan_url = f"https://bscscan.com/address/{addr}"
                   addr_short = short_addr(addr)
 
                   # Messaggio HTML:
                   header = f'🐋 <a href="{dex_url}"><u>{html.escape(sym)}</u></a> — <b>{html.escape(user)}</b>'
-                  line_buys = f"Acquisti nella finestra: <b>{fmt_money(bought)}</b>"
-                  line_addr = f'Wallet: <a href="{zerion_url}">{html.escape(addr_short)}</a>'
-                  line_addr_full = f'Zerion: <a href="{zerion_url}">{zerion_url}</a>'
-                  line_bscscan = f'BscScan: <a href="{bscscan_url}">{bscscan_url}</a>'
+                  line_buys = f"🪙 Acquisti nella finestra: <b>{fmt_money(bought)}</b>"
                   line_bal = f"Balance USD: <b>{fmt_money(balu)}</b>"
+                  line_addr = f"Wallet: {html.escape(addr_short)}"
+                  line_zerion = f'<a href="{zerion_url}">🏛️ Apri Wallet</a>'
 
-                  pieces = [header, line_buys, line_addr, line_addr_full, line_bscscan, line_bal]
+                  # ORDINE RICHIESTO: buys -> balance -> wallet -> (age) -> Zerion
+                  pieces = [header, line_buys, line_bal, line_addr]
                   if age_line:
                       pieces.append(age_line)
+                  pieces.append(line_zerion)
 
                   txt = "\n".join(pieces)
                   idx = total_msgs + 1
