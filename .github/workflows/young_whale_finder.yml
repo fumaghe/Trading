@@ -72,8 +72,8 @@ jobs:
             CMD="python young_whale_finder.py \
               --token ${ADDR} \
               --minutes 21 \
-              --min-usd 600 \
-              --young-days 4"
+              --min-usd 500 \
+              --young-days 200"
             echo "CMD: $CMD"
 
             OUTJSON="out/out-${SYM}.json"
@@ -182,7 +182,6 @@ jobs:
                   addr_short = short_addr(addr)
 
                   # Messaggio HTML:
-                  # Header: balena + coin sottolineata e linkata alla pair DexScreener
                   header = f'🐋 <a href="{dex_url}"><u>{html.escape(sym)}</u></a> — <b>{html.escape(user)}</b>'
                   line_buys = f"Acquisti nella finestra: <b>{fmt_money(bought)}</b>"
                   line_addr = f'Wallet: <a href="{zerion_url}">{html.escape(addr_short)}</a>'
@@ -221,7 +220,7 @@ jobs:
           for f in "${FILES[@]}"; do
             TEXT="$(cat "$f")"
             curl -sS -X POST "$API" \
-              --data-urlencode "chat_id=${TG_CHAT_ID}" \
+              --data-urlencode "chat_id=${TG_BOT_TOKEN}" \
               --data-urlencode "text=$TEXT" \
               -d "disable_web_page_preview=true" \
               -d "parse_mode=HTML" \
