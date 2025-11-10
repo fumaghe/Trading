@@ -45,6 +45,8 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install requests tenacity rich
+          sudo apt-get update
+          sudo apt-get install -y jq
 
       - name: Run YWF on 5 tokens (sequential)
         id: ywf
@@ -65,7 +67,7 @@ jobs:
           mkdir -p out
 
           EXIT_CODE=0
-          # ordine fisso (aggiunta RIVER)
+          # ordine fisso (inclusa RIVER)
           for SYM in AIA BLESS B2 LA RIVER KGEN; do
             ADDR="${TOKENS[$SYM]}"
             echo "Running ${SYM} (${ADDR})"
@@ -112,8 +114,8 @@ jobs:
           import os, json, html, glob, time
           from datetime import datetime, timezone
 
-          # SOGLIA: non inviare se balance_usd < 20000
-          THRESHOLD = 3000.0
+          # SOGLIA: non inviare se balance_usd < 3000
+          THRESHOLD = 3300.0
 
           def fmt_money(v):
               try:
@@ -220,7 +222,7 @@ jobs:
           for f in "${FILES[@]}"; do
             TEXT="$(cat "$f")"
             curl -sS -X POST "$API" \
-              --data-urlencode "chat_id=${TG_BOT_TOKEN}" \
+              --data-urlencode "chat_id=${TG_CHAT_ID}" \
               --data-urlencode "text=$TEXT" \
               -d "disable_web_page_preview=true" \
               -d "parse_mode=HTML" \
