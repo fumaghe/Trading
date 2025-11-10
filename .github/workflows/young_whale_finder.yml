@@ -74,8 +74,8 @@ jobs:
             CMD="python young_whale_finder.py \
               --token ${ADDR} \
               --minutes 21 \
-              --min-usd 500 \
-              --young-days 200"
+              --min-usd 570 \
+              --young-days 5"
             echo "CMD: $CMD"
 
             OUTJSON="out/out-${SYM}.json"
@@ -114,8 +114,8 @@ jobs:
           import os, json, html, glob, time
           from datetime import datetime, timezone
 
-          # SOGLIA: non inviare se balance_usd < 3000
-          THRESHOLD = 3300.0
+          # SOGLIA: non inviare se balance_usd < 20000
+          THRESHOLD = 20000.0
 
           def fmt_money(v):
               try:
