@@ -28,7 +28,7 @@ jobs:
       YWF_WINDOW_SLACK: "90"
       YWF_RPS: "2"
       YWF_BALANCE_TTL: "0"          # sempre bilanci freschi
-      YWF_TG_THRESHOLD: "10000"     # soglia balance_usd per invio su Telegram
+      YWF_TG_THRESHOLD: "10"     # soglia balance_usd per invio su Telegram
 
     steps:
       - name: Checkout
@@ -114,7 +114,7 @@ jobs:
           import os, json, html, glob, time
           from datetime import datetime, timezone
 
-          THRESHOLD = float(os.environ.get("YWF_TG_THRESHOLD", "10000"))
+          THRESHOLD = float(os.environ.get("YWF_TG_THRESHOLD", "10"))
           RUN_ID = os.environ.get("GITHUB_RUN_ID", "")
           RUN_NUMBER = os.environ.get("GITHUB_RUN_NUMBER", "")
           NOW_ISO = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00","Z")
