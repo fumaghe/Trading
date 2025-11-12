@@ -74,8 +74,8 @@ jobs:
             CMD="python young_whale_finder.py \
               --token ${ADDR} \
               --minutes 21 \
-              --min-usd 570 \
-              --young-days 5"
+              --min-usd 170 \
+              --young-days 150"
             echo "CMD: $CMD"
 
             OUTJSON="out/out-${SYM}.json"

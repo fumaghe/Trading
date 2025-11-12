@@ -10,7 +10,7 @@ Young Whale Finder — BSC (Moralis-min, DexScreener-first) — STABLE TOKEN-FIR
 - Assegnazione nome utente pseudo-random da file nomi.txt, con cache per address
 
 Uso:
-  python young_whale_finder.py --token 0x... --minutes 5 --min-usd 500 --young-days 3
+python young_whale_finder.py --token 0x48a18A4782b65a0fBed4dcA608BB28038B7bE339 --minutes 130 --min-usd 100 --young-days 170
 """
 
 from __future__ import annotations
