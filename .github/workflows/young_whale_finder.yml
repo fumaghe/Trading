@@ -230,6 +230,59 @@ jobs:
             sleep 0.6
           done
 
+      # >>> NOVITÀ: persisti un log compatto per il recap 6h
+      - name: Persist compact logs for recap (commit to repo)
+        shell: bash
+        run: |
+          set -e
+          mkdir -p history
+          python - << 'PY'
+          import os, json, glob, time
+          from datetime import datetime, timezone
+
+          files = sorted(glob.glob("out/out-*.json"))
+          now = datetime.now(timezone.utc)
+          ts_iso = now.isoformat().replace("+00:00","Z")
+          ts_compact = now.strftime("%Y%m%dT%H%M%SZ")
+
+          for f in files:
+              with open(f, "r", encoding="utf-8") as fh:
+                  j = json.load(fh)
+
+              sym = j.get("symbol") or os.path.basename(f).split("-")[1].split(".")[0]
+              token_addr = j.get("token") or ""
+              price = j.get("price_usd")
+              stats = j.get("stats") or {}
+              agg = j.get("agg") or {}
+              pair = j.get("main_pair_hint")
+
+              # Struttura log compatto
+              logdoc = {
+                  "ts": ts_iso,
+                  "symbol": sym,
+                  "token": token_addr,
+                  "price_usd": price,
+                  "main_pair_hint": pair,
+                  "window_minutes": j.get("window_minutes"),
+                  "stats": stats,
+                  "agg": agg
+              }
+
+              daydir = os.path.join("history", now.strftime("%Y"), now.strftime("%m"), now.strftime("%d"))
+              os.makedirs(daydir, exist_ok=True)
+              outp = os.path.join(daydir, f"{sym}-{ts_compact}.json")
+              with open(outp, "w", encoding="utf-8") as oh:
+                  json.dump(logdoc, oh, ensure_ascii=False, indent=2)
+              print("[LOG SAVED]", outp)
+          PY
+
+          # Commit & push
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add history || true
+          git commit -m "chore: persist YWF compact logs $(date -u +'%Y-%m-%dT%H:%MZ')" || echo "No changes to commit"
+          git push || echo "Nothing to push"
+
       - name: Upload artifacts (logs & outputs)
         if: always()
         uses: actions/upload-artifact@v4
@@ -240,3 +293,4 @@ jobs:
             out/*.txt
             out/msgs/*.html
             ywf_cache.json
+            history/**/*.json

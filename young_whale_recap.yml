@@ -1,0 +1,241 @@
+name: Young Whale Recap (every 6 hours)
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"  # ogni 6 ore (UTC)
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  recap-6h:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONIOENCODING: "utf-8"
+      TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+      TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
+      RECAP_HOURS: "6"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build 6h recap message
+        id: recap
+        shell: bash
+        run: |
+          mkdir -p out/recap
+          python - << 'PY'
+          import os, json, glob, html, math
+          from datetime import datetime, timezone, timedelta
+
+          HOURS = int(os.getenv("RECAP_HOURS", "6"))
+          now = datetime.now(timezone.utc)
+          since = now - timedelta(hours=HOURS)
+          now_ts = now.timestamp()
+          since_ts = since.timestamp()
+
+          files = sorted(glob.glob("history/**/*.json", recursive=True))
+          if not files:
+              msg = f"🧭 <b>Recap ultime {HOURS}h</b>\nNessun dato disponibile."
+              print(msg)
+              open("out/recap/recap.html","w",encoding="utf-8").write(msg)
+              print("has_data=0")
+              exit(0)
+
+          def dex_link(pair, token):
+              if pair: return f"https://dexscreener.com/bsc/{pair}"
+              return f"https://dexscreener.com/bsc/{token}"
+
+          def zerion(addr):
+              return f"https://app.zerion.io/{addr}/overview"
+
+          def fmt_money(v):
+              try:
+                  return f"${float(v):,.0f}".replace(",", " ")
+              except:
+                  return str(v)
+
+          def parse_ts(j):
+              # preferisci 'ts'; fallback 'to_iso'
+              ts = j.get("ts")
+              if ts:
+                  try: return datetime.fromisoformat(ts.replace("Z","+00:00")).timestamp()
+                  except: pass
+              to_iso = j.get("to_iso")
+              if to_iso:
+                  try: return datetime.fromisoformat(to_iso.replace("Z","+00:00")).timestamp()
+                  except: pass
+              return None
+
+          per_token = {}
+          overall_top = {}
+          addr_name = {}
+
+          runs_total = 0
+          iterations_total = 0
+          wallets_seen_total = 0
+          buys_usd_total = 0.0
+
+          for f in files:
+              try:
+                  j = json.load(open(f,"r",encoding="utf-8"))
+              except Exception as e:
+                  continue
+              ts_run = parse_ts(j)
+              if ts_run is None or ts_run < since_ts or ts_run > now_ts:
+                  continue
+
+              sym = j.get("symbol") or "TOKEN"
+              token_addr = j.get("token") or ""
+              pair = j.get("main_pair_hint") or ""
+              price = j.get("price_usd")
+
+              stats = j.get("stats") or {}
+              agg = j.get("agg") or {}
+
+              d = per_token.setdefault(sym, {
+                "token": token_addr,
+                "pair": pair,
+                "runs": 0,
+                "iterations": 0,
+                "wallets_seen": 0,
+                "buys_usd": 0.0,
+                "prices": [],
+                "top_map": {}
+              })
+
+              d["runs"] += 1
+              d["iterations"] += int(stats.get("total_swaps_scanned") or 0)
+              d["wallets_seen"] += int(agg.get("buyers_unique_all") or stats.get("wallet_unici_ge_min_usd") or 0)
+              try:
+                  d["buys_usd"] += float(agg.get("buyers_total_usd_window_all") or 0.0)
+              except:
+                  pass
+              if price is not None:
+                  try:
+                      d["prices"].append((ts_run, float(price)))
+                  except:
+                      pass
+
+              for w in (agg.get("top_spenders_all") or []):
+                  addr = (w.get("address") or "").strip()
+                  amt = float(w.get("sum_buys_usd_window") or 0.0)
+                  name = w.get("user_name") or addr
+                  if not addr: 
+                      continue
+                  d["top_map"][addr] = d["top_map"].get(addr, 0.0) + amt
+                  overall_top[addr] = overall_top.get(addr, 0.0) + amt
+                  addr_name[addr] = name
+
+          # Aggrega overall
+          for sym, d in per_token.items():
+              runs_total += d["runs"]
+              iterations_total += d["iterations"]
+              wallets_seen_total += d["wallets_seen"]
+              buys_usd_total += d["buys_usd"]
+
+          # Costruisci messaggio
+          header = f'🧭 <b>Recap ultime {HOURS}h</b> (UTC)\n<code>{since.strftime("%Y-%m-%d %H:%M")} → {now.strftime("%Y-%m-%d %H:%M")}</code>\n'
+          ov1 = f'📦 Run: <b>{runs_total}</b>  •  🔁 Iterazioni: <b>{iterations_total}</b>\n'
+          ov2 = f'👛 Wallet analizzati (stima): <b>{wallets_seen_total}</b>\n'
+          ov3 = f'💵 Volume acquisti (>= soglia): <b>{fmt_money(buys_usd_total)}</b>\n'
+          parts = [header, ov1, ov2, ov3, ""]
+
+          # Top overall (max 5)
+          top_overall = sorted(overall_top.items(), key=lambda kv: kv[1], reverse=True)[:5]
+          if top_overall:
+              parts.append("👑 <b>Top buyer globali</b>")
+              lines = []
+              for i,(addr,amt) in enumerate(top_overall, start=1):
+                  nm = html.escape(addr_name.get(addr, addr))
+                  link = zerion(addr)
+                  lines.append(f"{i}) <a href=\"{link}\"><b>{nm}</b></a> — {fmt_money(amt)}")
+              parts.append("\n".join(lines))
+              parts.append("")
+
+          # Sezioni per token
+          for sym, d in sorted(per_token.items()):
+              # prezzo: variazione 6h
+              ptxt = ""
+              if d["prices"]:
+                  d["prices"].sort(key=lambda x: x[0])
+                  p0 = d["prices"][0][1]
+                  p1 = d["prices"][-1][1]
+                  if p0 and p1 is not None:
+                      delta = p1 - p0
+                      pct = (delta / p0 * 100.0) if p0 != 0 else 0.0
+                      sign = "↗️" if pct > 0 else ("↘️" if pct < 0 else "→")
+                      ptxt = f"💱 Prezzo: <b>{p1:.6f}</b> ({sign} {pct:+.2f}%)"
+              link = dex_link(d["pair"], d["token"])
+              head = f'🪙 <a href="{link}"><b>{html.escape(sym)}</b></a>'
+              meta = f' — run: <b>{d["runs"]}</b> • 🔁 <b>{d["iterations"]}</b> • 👛 <b>{d["wallets_seen"]}</b> • 💵 <b>{fmt_money(d["buys_usd"])}</b>'
+              parts.append(head + meta)
+              if ptxt:
+                  parts.append(ptxt)
+
+              # top buyers per token (max 3)
+              top_tok = sorted(d["top_map"].items(), key=lambda kv: kv[1], reverse=True)[:3]
+              if top_tok:
+                  lines = []
+                  for i,(addr,amt) in enumerate(top_tok, start=1):
+                      nm = html.escape(addr_name.get(addr, addr))
+                      linkw = zerion(addr)
+                      lines.append(f"{i}) <a href=\"{linkw}\"><b>{nm}</b></a> — {fmt_money(amt)}")
+                  parts.append("👑 Top buyer:\n" + "\n".join(lines))
+              parts.append("")
+
+          msg = "\n".join(parts).strip()
+          open("out/recap/recap.html","w",encoding="utf-8").write(msg)
+          print("has_data=1")
+          PY
+
+      - name: Send Telegram — 6h Recap
+        if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
+        shell: bash
+        run: |
+          HAS=$(cat out/recap/recap.html >/dev/null 2>&1 && echo "1" || echo "0")
+          if [ "$HAS" != "1" ]; then
+            echo "Nessun recap generato."
+            exit 0
+          fi
+          TEXT="$(cat out/recap/recap.html)"
+          API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
+          # Telegram 4096 char limit: se troppo lungo, spezzalo in più messaggi
+          LEN=${#TEXT}
+          if [ $LEN -le 3500 ]; then
+            curl -sS -X POST "$API" \
+              --data-urlencode "chat_id=${TG_CHAT_ID}" \
+              --data-urlencode "text=$TEXT" \
+              -d "disable_web_page_preview=true" \
+              -d "parse_mode=HTML" \
+            || echo "Telegram send failed (single message)"
+          else
+            # split per sezioni vuote
+            awk -v RS= -v ORS="\n\n---\n\n" '1' out/recap/recap.html > out/recap/split.txt
+            c=1
+            while IFS= read -r block; do
+              [ -z "$block" ] && continue
+              curl -sS -X POST "$API" \
+                --data-urlencode "chat_id=${TG_CHAT_ID}" \
+                --data-urlencode "text=$block" \
+                -d "disable_web_page_preview=true" \
+                -d "parse_mode=HTML" \
+              || echo "Telegram send failed (part $c)"
+              c=$((c+1))
+              sleep 0.6
+            done < out/recap/split.txt
+          fi
+
+      - name: Upload recap artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: young-whale-recap-6h
+          path: out/recap/recap.html

@@ -591,10 +591,24 @@ def main():
     log.info(f"Swaps scanned={total_swaps} | pancake={total_swaps_pancake} | buys≥min={total_buys_ge_min} | wallets={len(buyers_sum_usd)}")
     log.debug(f"Filtered: not_buy={c_not_buy} not_pancake={c_not_pancake} below_min={c_below_min} no_wallet={c_no_wallet}")
 
+    # --- Aggregati utili per il recap 6h ---
+    buyers_total_usd_all = float(sum(buyers_sum_usd.values()))
+    buyers_unique_all = int(len(buyers_sum_usd))
+
+    # Top spender per finestra (prendiamo max(TK,10) per dare al recap abbastanza dati)
+    names_list = load_names_list(NAMES_FILE)
+    top_spenders_all = []
+    for addr, sum_usd in sorted(buyers_sum_usd.items(), key=lambda kv: kv[1], reverse=True)[:max(TOP_K, 10)]:
+        nm = get_or_assign_name(addr, names_list)
+        top_spenders_all.append({
+            "address": addr,
+            "user_name": nm,
+            "sum_buys_usd_window": float(sum_usd),
+        })
+
+    # --- Valutazione TOP_K con filtri young/balance ---
     top_wallets = sorted(buyers_sum_usd.items(), key=lambda kv: kv[1], reverse=True)[:TK]
     log.info(f"Evaluating first_tx + balance for TOP_K={len(top_wallets)} (of {len(buyers_sum_usd)})")
-
-    names_list = load_names_list(NAMES_FILE)
 
     young_cutoff_ts = int(now.timestamp()) - YOUNG_DAYS * 86400
     results: List[dict] = []
@@ -658,6 +672,12 @@ def main():
             "wallet_valutati_topk": len(top_wallets),
             "wallet_tenuti": kept,
             "wallet_scartati_old": skipped_old,
+        },
+        # >>> NOVITÀ: aggregati per il recap
+        "agg": {
+            "buyers_total_usd_window_all": buyers_total_usd_all,
+            "buyers_unique_all": buyers_unique_all,
+            "top_spenders_all": top_spenders_all,
         },
         "results": results,
     }
