@@ -3,15 +3,14 @@
 """
 Young Whale Finder — BSC (Moralis-min, DexScreener-first) — STABLE TOKEN-FIRST
 - Token-first scan (/erc20/:token/swaps) con filtro Pancake + pair hint
-- Early-stop robusto e dinamico + window server-side (from_date/to_date)
-- Balance SEMPRE aggiornato (no cache di default, opz. cache via TTL)
+- Early-stop robusto e dinamico
+- Balance SEMPRE aggiornato (no cache di default)
 - First-tx via /wallets/{address}/history (affidabile) con cache 1y
 - Filtro extra: escludi wallet con balance_usd < 1
 - Assegnazione nome utente pseudo-random da file nomi.txt, con cache per address
-- Fix: niente transactionTypes=buy (decidiamo noi la direzione), filtro Pancake robusto, retry su timeout
 
 Uso:
-python young_whale_finder.py --token 0x... --minutes 130 --min-usd 100 --young-days 570
+  python young_whale_finder.py --token 0x... --minutes 5 --min-usd 500 --young-days 3
 """
 
 from __future__ import annotations
@@ -52,9 +51,7 @@ log = logging.getLogger("ywf")
 # -------------------- Config (stable defaults) -------------------- #
 
 # Moralis
-MORALIS_API_KEY = os.getenv("MORALIS_API_KEY", "").strip()
-if not MORALIS_API_KEY or MORALIS_API_KEY.upper() in {"CHANGE_ME"}:
-    raise RuntimeError("MORALIS_API_KEY mancante: esporta la variabile d'ambiente prima di eseguire lo script.")
+MORALIS_API_KEY = os.getenv("MORALIS_API_KEY", "").strip() or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6Ijg3YTE1YmJmLWY5NmItNDY5ZS04MWViLTUyMWExNWUxNWU2NSIsIm9yZ0lkIjoiMzU5OTMzIiwidXNlcklkIjoiMzY5OTEzIiwidHlwZUlkIjoiYjVkN2Q2YjctNGM4ZC00NjRhLWIyNGMtMjU2MTk0NzJmNGE5IiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NjI1MzAzMDUsImV4cCI6NDkxODI5MDMwNX0.YPGGVEguNqhoy-5bE0k-3BBhMdvKNWxorjh4HFdgh1I"
 MORALIS_BASE = "https://deep-index.moralis.io/api/v2.2"
 
 # Free API (DexScreener)
@@ -65,8 +62,8 @@ CHAIN = "bsc"
 # Defaults
 YOUNG_DAYS_DEFAULT = int(os.getenv("YWF_YOUNG_DAYS", "3"))
 RPS = float(os.getenv("YWF_RPS", "2"))
-HTTP_TIMEOUT = int(os.getenv("YWF_HTTP_TIMEOUT", "25"))
-UA = "Mozilla/5.0 (YoungWhaleFinder/2.1-STABLE; +https://moralis.com)"
+HTTP_TIMEOUT = 25
+UA = "Mozilla/5.0 (YoungWhaleFinder/1.9-STABLE; +https://moralis.com)"
 
 TOP_K = int(os.getenv("YWF_TOPK", "20"))
 TARGET_WALLETS = int(os.getenv("YWF_TARGET_WALLETS", "22"))
@@ -80,9 +77,6 @@ if os.getenv("YWF_FAST", "1") == "1":
     MAX_SWAPS = max(300, min(MAX_SWAPS, 1200))
 
 SKIP_DATE_TO_BLOCK = os.getenv("YWF_NO_DTB", "1") == "1"
-
-# Debug switch per bypassare il filtro Pancake (solo per test)
-BYPASS_PANCAKE = os.getenv("YWF_BYPASS_PANCAKE", "0") == "1"
 
 # Cache
 CACHE_PATH = os.getenv("YWF_CACHE", "ywf_cache.json")
@@ -213,7 +207,7 @@ def _moralis_headers() -> dict:
 def _retry_if_retryable(e: Exception) -> bool:
     return isinstance(e, HttpError) and getattr(e, "retryable", False)
 
-@retry(stop=stop_after_attempt(4), wait=wait_exponential(min=1, max=16),
+@retry(stop=stop_after_attempt(4), wait=wait_exponential(1, 1, 8),
        retry=retry_if_exception(_retry_if_retryable))
 def moralis_get(path: str, params: dict | None = None) -> dict:
     global MORALIS_CALLS
@@ -221,11 +215,7 @@ def moralis_get(path: str, params: dict | None = None) -> dict:
         raise BudgetExhausted(f"Budget Moralis esaurito: {MORALIS_CALLS}/{BUDGET_CALLS} chiamate")
     http_rl.wait()
     url = f"{MORALIS_BASE}{path}"
-    try:
-        r = requests.get(url, headers=_moralis_headers(), params=params or {}, timeout=HTTP_TIMEOUT)
-    except requests.exceptions.RequestException as e:
-        # Timeout / network error -> retryable
-        raise HttpError(f"GET {path} network error: {e}", retryable=True)
+    r = requests.get(url, headers=_moralis_headers(), params=params or {}, timeout=HTTP_TIMEOUT)
     if r.status_code >= 400:
         retryable = (r.status_code == 429) or (500 <= r.status_code < 600)
         try:
@@ -236,14 +226,11 @@ def moralis_get(path: str, params: dict | None = None) -> dict:
     MORALIS_CALLS += 1
     return r.json()
 
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(min=0.5, max=8),
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(1, 0.5, 4),
        retry=retry_if_exception(lambda e: isinstance(e, HttpError) and e.retryable))
 def http_get(url: str, params: dict | None = None, headers: dict | None = None) -> dict:
     http_rl.wait()
-    try:
-        r = requests.get(url, params=params or {}, headers=headers or {"accept":"application/json","user-agent":UA}, timeout=HTTP_TIMEOUT)
-    except requests.exceptions.RequestException as e:
-        raise HttpError(f"GET {url} network error: {e}", retryable=True)
+    r = requests.get(url, params=params or {}, headers=headers or {"accept":"application/json","user-agent":UA}, timeout=HTTP_TIMEOUT)
     if r.status_code >= 400:
         retryable = (r.status_code == 429) or (500 <= r.status_code < 600)
         try:
@@ -267,33 +254,6 @@ def _as_float(v) -> Optional[float]:
     except Exception:
         try: return float(str(v).replace(",", ""))
         except Exception: return None
-
-def _is_bsc_address(s: str) -> bool:
-    return isinstance(s, str) and s.startswith("0x") and len(s) == 42 and all(c in "0123456789abcdefABCDEF" for c in s[2:])
-
-def _normalize_hex(s: Optional[str]) -> Optional[str]:
-    if not isinstance(s, str): return None
-    t = s.strip().lower()
-    return t if t.startswith("0x") and len(t) == 42 else None
-
-def _any_addr_match(obj, target_addr_lc: str) -> bool:
-    """True se QUALSIASI valore stringa (anche annidato) = target_addr."""
-    if obj is None:
-        return False
-    if isinstance(obj, dict):
-        for v in obj.values():
-            if _any_addr_match(v, target_addr_lc):
-                return True
-        return False
-    if isinstance(obj, list):
-        for v in obj:
-            if _any_addr_match(v, target_addr_lc):
-                return True
-        return False
-    if isinstance(obj, str):
-        n = _normalize_hex(obj)
-        return n == target_addr_lc
-    return False
 
 # -------------------- Moralis helpers (cached) -------------------- #
 
@@ -378,123 +338,51 @@ def dexscreener_pick_pancake_and_activity(token: str):
 # -------------------- Filters & USD calc -------------------- #
 
 PANCAKE_TXT_FIELDS = ("exchangeName","exchange","dex","dexName","factoryName","label","market","dexId")
-PAIR_FIELDS = (
-    "pairAddress","pair_address",
-    "poolAddress","pool_address",
-    "liquidityPoolAddress","liquidity_pool_address",
-    "lpAddress","lp_address",
-    "pair","pool",
-    "address","contractAddress","contract_address","logAddress","log_address"
-)
+PAIR_FIELDS = ("pairAddress","poolAddress","liquidityPoolAddress","lpAddress","pair","pool")
 
 def is_pancake_swap(s: dict, main_pair_hint: Optional[str]) -> bool:
-    """
-    Accetta lo swap se:
-    - troviamo 'pancake' nei campi testo DEX, oppure
-    - (preferito) il record contiene l'address della pair uguale a main_pair_hint,
-      anche in campi generici come 'address'/'logAddress' o nested dict.
-    """
-    if BYPASS_PANCAKE:
-        return True
-
-    # 1) Se abbiamo la pair di DexScreener, proviamo prima il match per address
-    if main_pair_hint:
-        hint = _normalize_hex(main_pair_hint)
-        if hint:
-            # a) campi "noti"
-            for k in PAIR_FIELDS:
-                v = s.get(k)
-                if isinstance(v, str):
-                    n = _normalize_hex(v)
-                    if n == hint:
-                        return True
-                elif isinstance(v, dict):
-                    addr = _normalize_hex(v.get("address")) or _normalize_hex(v.get("pairAddress")) or _normalize_hex(v.get("poolAddress"))
-                    if addr == hint:
-                        return True
-            # b) fallback: cerca ovunque
-            if _any_addr_match(s, hint):
-                return True
-
-    # 2) fallback: 'pancake' nei campi testuali
     txt = " ".join(str(s.get(k) or "").lower() for k in PANCAKE_TXT_FIELDS)
     if "pancake" in txt:
-        return True
-
+        if main_pair_hint:
+            pa = None
+            for k in PAIR_FIELDS:
+                if s.get(k): pa = s.get(k); break
+            if isinstance(pa, str) and pa.strip().lower() == main_pair_hint.strip().lower():
+                return True
+            if pa is None:
+                return True
+        else:
+            return True
+    if main_pair_hint:
+        pa = None
+        for k in PAIR_FIELDS:
+            if s.get(k): pa = s.get(k); break
+        if isinstance(pa, str) and pa.strip().lower() == main_pair_hint.strip().lower():
+            return True
     return False
 
-def calc_usd_from_swap(s: dict, price_usd: Optional[float], token_addr_lower: Optional[str] = None) -> Optional[float]:
-    # 1) Se l’API già fornisce un campo in USD, usalo
+def calc_usd_from_swap(s: dict, price_usd: Optional[float]) -> Optional[float]:
     for k in ("totalValueUsd","valueUsd","usdValue","amountUsd","usd_amount","quoteAmountUsd","priceUsd"):
         v = _as_float(s.get(k))
         if v is not None:
             return v
     if price_usd is None:
         return None
-
-    # 2) Prova a dedurre QUANTO token target è stato ricevuto/ceduto
-    if token_addr_lower:
-        out_addr = str(_first_key(s, [
-            "toTokenAddress","tokenOutAddress","token1Address","tokenOut","outTokenAddress"
-        ], "")).lower()
-        if out_addr == token_addr_lower:
-            for k in ("toTokenAmount","amountOut","amount1Out","tokenAmountOut"):
-                v = _as_float(s.get(k))
-                if v is not None:
-                    return v * float(price_usd)
-
-        in_addr = str(_first_key(s, [
-            "fromTokenAddress","tokenInAddress","token0Address","tokenIn","inTokenAddress"
-        ], "")).lower()
-        if in_addr == token_addr_lower:
-            for k in ("fromTokenAmount","amountIn","amount0In","tokenAmountIn"):
-                v = _as_float(s.get(k))
-                if v is not None:
-                    return v * float(price_usd)
-
-    # 3) Fallback generico
-    for k in ("tokenAmount","amountToken","token_amount","amount","value","toTokenAmount","buyAmount","amount0In","amount1In","amountIn","amountOut"):
+    for k in ("tokenAmount","amountToken","token_amount","amount","value","toTokenAmount","buyAmount","amount0In","amount1In","amountIn"):
         v = _as_float(s.get(k))
         if v is not None:
             return v * float(price_usd)
     return None
 
-def is_buy_for_token(s: dict, token_addr_lower: str) -> Optional[bool]:
-    """True se è BUY del token target, False se è SELL, None se indeterminabile."""
-    out_addr = str(_first_key(s, [
-        "toTokenAddress","tokenOutAddress","token1Address","tokenOut","outTokenAddress"
-    ], "")).lower()
-    in_addr = str(_first_key(s, [
-        "fromTokenAddress","tokenInAddress","token0Address","tokenIn","inTokenAddress"
-    ], "")).lower()
-
-    if out_addr == token_addr_lower:
-        return True
-    if in_addr == token_addr_lower:
-        return False
-
-    # Fallback alla label, se presente (meno affidabile)
-    tx_type = str(_first_key(s, ["transactionType","type","side","action"], "")).lower()
-    if tx_type in ("buy","sell"):
-        return tx_type == "buy"
-    return None
-
 # -------------------- Swaps iterator (TOKEN-FIRST) -------------------- #
 
-def iterate_swaps_token_first(token: str, main_pair: Optional[str], from_ts: int, to_ts: int,
-                              from_iso: Optional[str] = None, to_iso: Optional[str] = None):
+def iterate_swaps_token_first(token: str, main_pair: Optional[str], from_ts: int, to_ts: int):
     cursor = None
     page = 0
     consecutive_old_pages = 0
-    use_date_filters = bool(from_iso and to_iso)
-
     while True:
-        params = {"chain": CHAIN, "limit": 100, "order": "DESC"}
-        if cursor:
-            params["cursor"] = cursor
-        if use_date_filters:
-            params["from_date"] = from_iso
-            params["to_date"] = to_iso
+        params = {"chain": CHAIN, "order": "DESC", "limit": 100, "transactionTypes": "buy"}
+        if cursor: params["cursor"] = cursor
 
         try:
             j = moralis_get(f"/erc20/{token}/swaps", params=params)
@@ -503,7 +391,7 @@ def iterate_swaps_token_first(token: str, main_pair: Optional[str], from_ts: int
 
         result = j.get("result") or []
         page += 1
-        log.debug(f"[token page {page}] swaps: {len(result)} (cursor={'yes' if j.get('cursor') else 'no'}) | date_filters={'on' if use_date_filters else 'off'}")
+        log.debug(f"[token page {page}] swaps: {len(result)} (cursor={'yes' if j.get('cursor') else 'no'})")
 
         page_all_before = True
         any_in_window = False
@@ -525,14 +413,13 @@ def iterate_swaps_token_first(token: str, main_pair: Optional[str], from_ts: int
                 continue
             yield s
 
-        if not use_date_filters:
-            if any_in_window:
-                consecutive_old_pages = 0
-            elif page_all_before:
-                consecutive_old_pages += 1
-                if consecutive_old_pages >= 2:
-                    log.info("Early-stop: 2 pagine consecutive tutte < from_ts (più vecchie della finestra).")
-                    return
+        if any_in_window:
+            consecutive_old_pages = 0
+        elif page_all_before:
+            consecutive_old_pages += 1
+            if consecutive_old_pages >= 2:
+                log.info("Early-stop: 2 pagine consecutive tutte < from_ts (più vecchie della finestra).")
+                return
 
         cursor = j.get("cursor") or None
         if not cursor:
@@ -577,18 +464,6 @@ def get_wallet_token_balance_fresh(addr: str, token: str, decimals: int) -> floa
     log.debug(f"[net] balance({addr}) -> {bal}")
     return bal
 
-def get_wallet_token_balance(addr: str, token: str, decimals: int) -> float:
-    cache_key = f"{addr}:{token}"
-    if TTL_BALANCE > 0:
-        cv = CACHE.get("balance", cache_key, ttl=TTL_BALANCE)
-        if cv is not None:
-            log.debug(f"[cache] balance({addr}) -> {cv}")
-            return float(cv)
-    bal = get_wallet_token_balance_fresh(addr, token, decimals)
-    if TTL_BALANCE > 0:
-        CACHE.set("balance", cache_key, bal)
-    return bal
-
 # -------------------- CLI -------------------- #
 
 def parse_args():
@@ -605,9 +480,6 @@ def main():
     t0 = time.time()
     args = parse_args()
     token = args.token
-    if not _is_bsc_address(token):
-        raise SystemExit(f"Indirizzo token non valido: {token}")
-
     minutes = max(1, int(args.minutes))
     min_usd = max(0.0, float(args.min_usd))
     YOUNG_DAYS = max(0, int(args.young_days))
@@ -660,29 +532,26 @@ def main():
 
     buyers_sum_usd: Dict[str, float] = {}
     total_swaps = total_swaps_pancake = total_buys_ge_min = 0
-    c_not_buy = c_below_min = c_no_wallet = c_unknown_dir = 0
+    c_not_buy = c_not_pancake = c_below_min = c_no_wallet = 0
 
     last_top_wallets: List[str] = []
     stable_pages = 0
 
-    iterator = iterate_swaps_token_first(token, main_pair, from_ts, to_ts, from_iso, to_iso)
+    iterator = iterate_swaps_token_first(token, main_pair, from_ts, to_ts)
 
     try:
         for s in iterator:
             total_swaps += 1
-            total_swaps_pancake += 1  # il filtro Pancake è già nel generatore (salvo BYPASS)
 
-            is_buy = is_buy_for_token(s, token.lower())
-            if is_buy is False:
+            tx_type = str(_first_key(s, ["transactionType","type","side","action"], "")).lower()
+            if tx_type != "buy":
                 c_not_buy += 1
                 if total_swaps >= MAX: break
                 continue
-            if is_buy is None:
-                c_unknown_dir += 1
-                if total_swaps >= MAX: break
-                continue
 
-            usd_val = calc_usd_from_swap(s, price_usd, token_addr_lower=token.lower())
+            total_swaps_pancake += 1
+
+            usd_val = calc_usd_from_swap(s, price_usd)
             if usd_val is None or usd_val < min_usd:
                 c_below_min += 1
                 if total_swaps >= MAX: break
@@ -697,7 +566,7 @@ def main():
 
             buyers_sum_usd[str(wallet)] = buyers_sum_usd.get(str(wallet), 0.0) + float(usd_val)
 
-            if total_swaps % 100 == 0:
+            if total_swaps % 200 == 0:
                 current_top = [w for w,_ in sorted(buyers_sum_usd.items(), key=lambda kv: kv[1], reverse=True)[:TK]]
                 if current_top == last_top_wallets:
                     stable_pages += 1
@@ -720,7 +589,7 @@ def main():
         log.warning(str(e))
 
     log.info(f"Swaps scanned={total_swaps} | pancake={total_swaps_pancake} | buys≥min={total_buys_ge_min} | wallets={len(buyers_sum_usd)}")
-    log.debug(f"Filtered: not_buy={c_not_buy} below_min={c_below_min} no_wallet={c_no_wallet} unknown_dir={c_unknown_dir}")
+    log.debug(f"Filtered: not_buy={c_not_buy} not_pancake={c_not_pancake} below_min={c_below_min} no_wallet={c_no_wallet}")
 
     top_wallets = sorted(buyers_sum_usd.items(), key=lambda kv: kv[1], reverse=True)[:TK]
     log.info(f"Evaluating first_tx + balance for TOP_K={len(top_wallets)} (of {len(buyers_sum_usd)})")
@@ -742,7 +611,7 @@ def main():
             continue
 
         try:
-            bal_tok = get_wallet_token_balance(addr, token, dec)
+            bal_tok = get_wallet_token_balance_fresh(addr, token, dec)
         except BudgetExhausted as e:
             log.warning(str(e)); break
 

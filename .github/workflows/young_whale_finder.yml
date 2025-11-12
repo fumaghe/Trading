@@ -28,7 +28,6 @@ jobs:
       YWF_WINDOW_SLACK: "90"
       YWF_RPS: "2"
       YWF_BALANCE_TTL: "0"          # sempre bilanci freschi
-      YWF_TG_THRESHOLD: "10000"     # soglia balance_usd per invio su Telegram
 
     steps:
       - name: Checkout
@@ -49,7 +48,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y jq
 
-      - name: Run YWF on tokens (sequential)
+      - name: Run YWF on 5 tokens (sequential)
         id: ywf
         shell: bash
         run: |
@@ -68,13 +67,14 @@ jobs:
           mkdir -p out
 
           EXIT_CODE=0
+          # ordine fisso (inclusa RIVER)
           for SYM in AIA BLESS B2 LA RIVER KGEN; do
             ADDR="${TOKENS[$SYM]}"
             echo "Running ${SYM} (${ADDR})"
             CMD="python young_whale_finder.py \
               --token ${ADDR} \
-              --minutes 50 \
-              --min-usd 1 \
+              --minutes 21 \
+              --min-usd 570 \
               --young-days 500"
             echo "CMD: $CMD"
 
@@ -106,18 +106,16 @@ jobs:
 
           echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
 
-      - name: Build per-wallet messages + per-run summary
+      - name: Build per-wallet Telegram messages (only if results exist)
         shell: bash
         run: |
-          mkdir -p out/msgs data/ywf_runs
+          mkdir -p out/msgs
           python - << 'PY'
           import os, json, html, glob, time
           from datetime import datetime, timezone
 
-          THRESHOLD = float(os.environ.get("YWF_TG_THRESHOLD", "10000"))
-          RUN_ID = os.environ.get("GITHUB_RUN_ID", "")
-          RUN_NUMBER = os.environ.get("GITHUB_RUN_NUMBER", "")
-          NOW_ISO = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat().replace("+00:00","Z")
+          # SOGLIA: non inviare se balance_usd < 20000
+          THRESHOLD = 20000.0
 
           def fmt_money(v):
               try:
@@ -133,7 +131,6 @@ jobs:
 
           files = sorted(glob.glob("out/out-*.json"))
           total_msgs = 0
-          tokens_summary = []
           for f in files:
               try:
                   with open(f, "r", encoding="utf-8") as fh:
@@ -146,10 +143,11 @@ jobs:
               token_addr = j.get("token") or ""
               pair = j.get("main_pair_hint") or ""
               results = j.get("results") or []
-              stats = j.get("stats") or {}
+              if not results:
+                  print(f"[DEBUG] {sym}: nessun results nel JSON {f}")
+                  continue
 
-              sent_candidates = 0
-
+              # Link DexScreener: preferisci pair; fallback alla pagina token
               if pair:
                   dex_url = f"https://dexscreener.com/bsc/{pair}"
               else:
@@ -160,17 +158,19 @@ jobs:
                   addr = (r.get("address","") or "").strip()
                   balu = r.get("balance_usd")
 
+                  # --- FILTRO BILANCIO ---
                   try:
                       balf = float(balu)
                   except Exception:
                       balf = None
                   if balf is None or balf < THRESHOLD:
+                      print(f"[DEBUG] skip {sym}: {addr} balance_usd={balu} < {THRESHOLD}")
                       continue
-
-                  sent_candidates += 1
+                  # ------------------------
 
                   bought = r.get("sum_buys_usd_window")
 
+                  # Età wallet
                   first_ts = r.get("first_tx_ts")
                   age_line = ""
                   if isinstance(first_ts, (int, float)) and first_ts > 0:
@@ -178,15 +178,18 @@ jobs:
                       iso_date = datetime.fromtimestamp(first_ts, tz=timezone.utc).strftime("%Y-%m-%d")
                       age_line = f"<i>Wallet creato il {iso_date} — {days} giorni</i>"
 
+                  # Link Zerion
                   zerion_url = f"https://app.zerion.io/{addr}/overview"
                   addr_short = short_addr(addr)
 
+                  # Messaggio HTML:
                   header = f'🐋 <a href="{dex_url}"><u>{html.escape(sym)}</u></a> — <b>{html.escape(user)}</b>'
                   line_buys = f"🪙 Acquisti nella finestra: <b>{fmt_money(bought)}</b>"
                   line_bal = f"Balance USD: <b>{fmt_money(balu)}</b>"
                   line_addr = f"Wallet: {html.escape(addr_short)}"
                   line_zerion = f'<a href="{zerion_url}">🏛️ Apri Wallet</a>'
 
+                  # ORDINE RICHIESTO: buys -> balance -> wallet -> (age) -> Zerion
                   pieces = [header, line_buys, line_bal, line_addr]
                   if age_line:
                       pieces.append(age_line)
@@ -197,36 +200,8 @@ jobs:
                   out_path = f"out/msgs/msg_{idx:03d}.html"
                   with open(out_path, "w", encoding="utf-8") as m:
                       m.write(txt)
+                  print(f"[DEBUG] msg creato per {sym}: {addr} -> {out_path}")
                   total_msgs += 1
-
-              tokens_summary.append({
-                  "symbol": sym,
-                  "token": token_addr,
-                  "price_usd": j.get("price_usd"),
-                  "stats": {
-                      "wallet_unici_ge_min_usd": stats.get("wallet_unici_ge_min_usd", 0),
-                      "wallet_tenuti": stats.get("wallet_tenuti", 0)
-                  },
-                  "messages_candidates": sent_candidates
-              })
-
-          totals = {
-              "iterations": 1,
-              "wallets_seen": sum(t["stats"]["wallet_unici_ge_min_usd"] for t in tokens_summary),
-              "wallets_kept": sum(t["stats"]["wallet_tenuti"] for t in tokens_summary),
-              "messages_sent": total_msgs
-          }
-
-          summary = {
-              "run_id": RUN_ID,
-              "run_number": RUN_NUMBER,
-              "timestamp_utc": NOW_ISO,
-              "tokens": tokens_summary,
-              "totals": totals
-          }
-          fname = f"data/ywf_runs/run-{NOW_ISO.replace(':','').replace('-','')}.json"
-          with open(fname, "w", encoding="utf-8") as f:
-              json.dump(summary, f, ensure_ascii=False, indent=2)
 
           with open("out/msgs/COUNT.txt","w",encoding="utf-8") as f:
               f.write(str(total_msgs))
@@ -254,20 +229,6 @@ jobs:
             || echo "Telegram send failed ($f)"
             sleep 0.6
           done
-
-      - name: Commit per-run summary
-        if: always()
-        shell: bash
-        run: |
-          if [ -n "$(git status --porcelain data/ywf_runs || true)" ]; then
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add data/ywf_runs
-            git commit -m "YWF summary: run $GITHUB_RUN_ID"
-            git push
-          else
-            echo "Nessun nuovo summary da committare."
-          fi
 
       - name: Upload artifacts (logs & outputs)
         if: always()
