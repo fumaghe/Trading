@@ -189,7 +189,7 @@ jobs:
                   line_addr = f"Wallet: {html.escape(addr_short)}"
                   line_zerion = f'<a href="{zerion_url}">🏛️ Apri Wallet</a>'
 
-                  # ORDINE RICHIESTO: buys -> balance -> wallet -> (age) -> Zerion
+                  # ORDINE: buys -> balance -> wallet -> (age) -> Zerion
                   pieces = [header, line_buys, line_bal, line_addr]
                   if age_line:
                       pieces.append(age_line)
@@ -230,7 +230,7 @@ jobs:
             sleep 0.6
           done
 
-      # >>> NOVITÀ: persisti un log compatto per il recap 6h
+      # Persisti log compatti per il recap 6h
       - name: Persist compact logs for recap (commit to repo)
         shell: bash
         run: |
@@ -256,7 +256,6 @@ jobs:
               agg = j.get("agg") or {}
               pair = j.get("main_pair_hint")
 
-              # Struttura log compatto
               logdoc = {
                   "ts": ts_iso,
                   "symbol": sym,
@@ -276,7 +275,6 @@ jobs:
               print("[LOG SAVED]", outp)
           PY
 
-          # Commit & push
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add history || true

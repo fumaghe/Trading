@@ -33,7 +33,7 @@ jobs:
         run: |
           mkdir -p out/recap
           python - << 'PY'
-          import os, json, glob, html, math
+          import os, json, glob, html
           from datetime import datetime, timezone, timedelta
 
           HOURS = int(os.getenv("RECAP_HOURS", "6"))
@@ -45,9 +45,7 @@ jobs:
           files = sorted(glob.glob("history/**/*.json", recursive=True))
           if not files:
               msg = f"🧭 <b>Recap ultime {HOURS}h</b>\nNessun dato disponibile."
-              print(msg)
               open("out/recap/recap.html","w",encoding="utf-8").write(msg)
-              print("has_data=0")
               exit(0)
 
           def dex_link(pair, token):
@@ -64,14 +62,9 @@ jobs:
                   return str(v)
 
           def parse_ts(j):
-              # preferisci 'ts'; fallback 'to_iso'
               ts = j.get("ts")
               if ts:
                   try: return datetime.fromisoformat(ts.replace("Z","+00:00")).timestamp()
-                  except: pass
-              to_iso = j.get("to_iso")
-              if to_iso:
-                  try: return datetime.fromisoformat(to_iso.replace("Z","+00:00")).timestamp()
                   except: pass
               return None
 
@@ -87,7 +80,7 @@ jobs:
           for f in files:
               try:
                   j = json.load(open(f,"r",encoding="utf-8"))
-              except Exception as e:
+              except Exception:
                   continue
               ts_run = parse_ts(j)
               if ts_run is None or ts_run < since_ts or ts_run > now_ts:
@@ -128,12 +121,13 @@ jobs:
               for w in (agg.get("top_spenders_all") or []):
                   addr = (w.get("address") or "").strip()
                   amt = float(w.get("sum_buys_usd_window") or 0.0)
-                  name = w.get("user_name") or addr
+                  name = (w.get("user_name") or "").strip()  # nome presente SOLO se wallet validato
                   if not addr: 
                       continue
                   d["top_map"][addr] = d["top_map"].get(addr, 0.0) + amt
                   overall_top[addr] = overall_top.get(addr, 0.0) + amt
-                  addr_name[addr] = name
+                  if name:
+                      addr_name[addr] = name  # non sovrascrivo se vuoto
 
           # Aggrega overall
           for sym, d in per_token.items():
@@ -142,7 +136,6 @@ jobs:
               wallets_seen_total += d["wallets_seen"]
               buys_usd_total += d["buys_usd"]
 
-          # Costruisci messaggio
           header = f'🧭 <b>Recap ultime {HOURS}h</b> (UTC)\n<code>{since.strftime("%Y-%m-%d %H:%M")} → {now.strftime("%Y-%m-%d %H:%M")}</code>\n'
           ov1 = f'📦 Run: <b>{runs_total}</b>  •  🔁 Iterazioni: <b>{iterations_total}</b>\n'
           ov2 = f'👛 Wallet analizzati (stima): <b>{wallets_seen_total}</b>\n'
@@ -155,7 +148,7 @@ jobs:
               parts.append("👑 <b>Top buyer globali</b>")
               lines = []
               for i,(addr,amt) in enumerate(top_overall, start=1):
-                  nm = html.escape(addr_name.get(addr, addr))
+                  nm = html.escape(addr_name.get(addr, addr))  # se non validato, niente nome
                   link = zerion(addr)
                   lines.append(f"{i}) <a href=\"{link}\"><b>{nm}</b></a> — {fmt_money(amt)}")
               parts.append("\n".join(lines))
@@ -163,7 +156,6 @@ jobs:
 
           # Sezioni per token
           for sym, d in sorted(per_token.items()):
-              # prezzo: variazione 6h
               ptxt = ""
               if d["prices"]:
                   d["prices"].sort(key=lambda x: x[0])
@@ -174,6 +166,7 @@ jobs:
                       pct = (delta / p0 * 100.0) if p0 != 0 else 0.0
                       sign = "↗️" if pct > 0 else ("↘️" if pct < 0 else "→")
                       ptxt = f"💱 Prezzo: <b>{p1:.6f}</b> ({sign} {pct:+.2f}%)"
+
               link = dex_link(d["pair"], d["token"])
               head = f'🪙 <a href="{link}"><b>{html.escape(sym)}</b></a>'
               meta = f' — run: <b>{d["runs"]}</b> • 🔁 <b>{d["iterations"]}</b> • 👛 <b>{d["wallets_seen"]}</b> • 💵 <b>{fmt_money(d["buys_usd"])}</b>'
@@ -186,7 +179,7 @@ jobs:
               if top_tok:
                   lines = []
                   for i,(addr,amt) in enumerate(top_tok, start=1):
-                      nm = html.escape(addr_name.get(addr, addr))
+                      nm = html.escape(addr_name.get(addr, addr))  # mostra nome solo se validato
                       linkw = zerion(addr)
                       lines.append(f"{i}) <a href=\"{linkw}\"><b>{nm}</b></a> — {fmt_money(amt)}")
                   parts.append("👑 Top buyer:\n" + "\n".join(lines))
@@ -194,21 +187,18 @@ jobs:
 
           msg = "\n".join(parts).strip()
           open("out/recap/recap.html","w",encoding="utf-8").write(msg)
-          print("has_data=1")
           PY
 
       - name: Send Telegram — 6h Recap
         if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
         shell: bash
         run: |
-          HAS=$(cat out/recap/recap.html >/dev/null 2>&1 && echo "1" || echo "0")
-          if [ "$HAS" != "1" ]; then
+          TEXT="$(cat out/recap/recap.html 2>/dev/null || echo '')"
+          if [ -z "$TEXT" ]; then
             echo "Nessun recap generato."
             exit 0
           fi
-          TEXT="$(cat out/recap/recap.html)"
           API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
-          # Telegram 4096 char limit: se troppo lungo, spezzalo in più messaggi
           LEN=${#TEXT}
           if [ $LEN -le 3500 ]; then
             curl -sS -X POST "$API" \
@@ -218,7 +208,6 @@ jobs:
               -d "parse_mode=HTML" \
             || echo "Telegram send failed (single message)"
           else
-            # split per sezioni vuote
             awk -v RS= -v ORS="\n\n---\n\n" '1' out/recap/recap.html > out/recap/split.txt
             c=1
             while IFS= read -r block; do
