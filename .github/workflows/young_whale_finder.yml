@@ -179,7 +179,7 @@ jobs:
                       age_line = f"<i>Wallet creato il {iso_date} — {days} giorni</i>"
 
                   # Link Zerion
-                  zerion_url = f"https://app.zerion.io/{addr}/overview"
+                  zerion_url = f"https://debank.com/profile/{addr}"
                   addr_short = short_addr(addr)
 
                   # Messaggio HTML:

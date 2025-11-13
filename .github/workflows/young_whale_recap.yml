@@ -53,7 +53,7 @@ jobs:
               return f"https://dexscreener.com/bsc/{token}"
 
           def zerion(addr):
-              return f"https://app.zerion.io/{addr}/overview"
+              return f"https://debank.com/profile/{addr}"
 
           def short_addr(a: str) -> str:
               a = (a or "").strip()
