@@ -114,8 +114,8 @@ jobs:
           import os, json, html, glob, time
           from datetime import datetime, timezone
 
-          # SOGLIA: non inviare se balance_usd < 20000
-          THRESHOLD = 20000.0
+          # SOGLIA: non inviare se balance_usd < 10000
+          THRESHOLD = 10000.0
 
           def fmt_money(v):
               try:
