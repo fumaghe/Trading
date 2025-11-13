@@ -8,8 +8,9 @@ Young Whale Finder — BSC (Moralis-min, DexScreener-aggregated) — STABLE TOKE
 - Early-stop robusto e dinamico (cap basato sull’attività aggregata coerente con --minutes)
 - Balance SEMPRE aggiornato (no cache di default)
 - First-tx via /wallets/{address}/history (cache 1y)
-- Escludi wallet con balance_usd < 1
-- Nomi assegnati SOLO ai wallet che passano TUTTI i filtri (young + balance)
+- Wallet considerati "validati" (results + nome) solo se balance_usd >= NAME_MIN_BAL_USD (default 10000),
+  ma tutti i top spender restano comunque in agg.top_spenders_all
+- Nomi assegnati SOLO ai wallet che passano TUTTI i filtri (young + balance>=soglia)
 
 Uso:
   python young_whale_finder.py --token 0x... --minutes 5 --min-usd 500 --young-days 3
@@ -90,6 +91,9 @@ TTL_BALANCE = int(os.getenv("YWF_BALANCE_TTL", "0"))
 
 # Names
 NAMES_FILE = os.getenv("YWF_NAMES_FILE", "nomi.txt")
+
+# Soglia balance USD per essere considerato "validato" (results + nome)
+NAME_MIN_BAL_USD = float(os.getenv("YWF_NAME_MIN_BAL_USD", "10000"))
 
 # -------------------- Utils & Cache -------------------- #
 
@@ -575,10 +579,11 @@ def main():
             log.warning(str(e)); break
 
         bal_usd = (price_usd or 0.0) * bal_tok if price_usd is not None else None
-        if bal_usd is None or bal_usd < 1.0:
+
+        # solo wallet con balance_usd >= NAME_MIN_BAL_USD finiscono in results e ricevono un nome
+        if bal_usd is None or bal_usd < NAME_MIN_BAL_USD:
             continue
 
-        # assegna NOME SOLO ai wallet validati (young + balance)
         user_name = get_or_assign_name(addr, names_list)
         kept_name_map[addr] = user_name
 
@@ -594,7 +599,7 @@ def main():
 
     results.sort(key=lambda r: (r["balance_usd"] if r["balance_usd"] is not None else -1), reverse=True)
 
-    # top spender “raw” per finestra, con nome SOLO se validato
+    # top spender “raw” per finestra, con nome SOLO se validato (>= NAME_MIN_BAL_USD)
     top_spenders_all = []
     for addr, sum_usd in sorted(buyers_sum_usd.items(), key=lambda kv: kv[1], reverse=True)[:max(TOP_K, 10)]:
         rec = {"address": addr, "sum_buys_usd_window": float(sum_usd)}
