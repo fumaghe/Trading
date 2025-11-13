@@ -199,23 +199,78 @@ jobs:
           open("out/recap/recap.html","w",encoding="utf-8").write(msg)
           PY
 
-      - name: Send Telegram — 6h Recap (single message)
+      - name: Send Telegram — 6h Recap (auto-split by line)
         if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
         shell: bash
         run: |
-          TEXT="$(cat out/recap/recap.html 2>/dev/null || echo '')"
-          if [ -z "$TEXT" ]; then
+          FILE="out/recap/recap.html"
+          if [ ! -f "$FILE" ]; then
             echo "Nessun recap generato."
             exit 0
           fi
+
+          mkdir -p out/recap/parts
+
+          # Split del messaggio in più parti rispettando i newline
+          python - << 'PY'
+          import os
+
+          MAX_LEN = 3500  # sicuro sotto il limite Telegram (4096)
+          src = "out/recap/recap.html"
+          dst_dir = "out/recap/parts"
+          os.makedirs(dst_dir, exist_ok=True)
+
+          with open(src, "r", encoding="utf-8") as f:
+              text = f.read().strip()
+
+          if not text:
+              raise SystemExit(0)
+
+          lines = text.split("\n")
+          parts = []
+          buf = ""
+
+          for line in lines:
+              candidate = (buf + "\n" + line) if buf else line
+              if len(candidate) > MAX_LEN:
+                  if buf:
+                      parts.append(buf.rstrip())
+                  buf = line
+                  # Se una singola riga è più lunga di MAX_LEN, la mandiamo comunque intera
+                  if len(buf) > MAX_LEN:
+                      parts.append(buf)
+                      buf = ""
+              else:
+                  buf = candidate
+
+          if buf:
+              parts.append(buf.rstrip())
+
+          for idx, chunk in enumerate(parts, start=1):
+              out_path = os.path.join(dst_dir, f"recap_part_{idx:02d}.html")
+              with open(out_path, "w", encoding="utf-8") as f:
+                  f.write(chunk)
+          PY
+
           API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
-          # invia sempre un solo messaggio
-          curl -sS -X POST "$API" \
-            --data-urlencode "chat_id=${TG_CHAT_ID}" \
-            --data-urlencode "text=$TEXT" \
-            -d "disable_web_page_preview=true" \
-            -d "parse_mode=HTML" \
-          || echo "Telegram send failed"
+          shopt -s nullglob
+          PARTS=(out/recap/parts/recap_part_*.html)
+
+          if [ ${#PARTS[@]} -eq 0 ]; then
+            echo "Nessun contenuto da inviare."
+            exit 0
+          fi
+
+          for f in "${PARTS[@]}"; do
+            TEXT="$(cat "$f")"
+            curl -sS -X POST "$API" \
+              --data-urlencode "chat_id=${TG_CHAT_ID}" \
+              --data-urlencode "text=$TEXT" \
+              -d "disable_web_page_preview=true" \
+              -d "parse_mode=HTML" \
+            || echo "Telegram send failed ($f)"
+            sleep 0.6
+          done
 
       - name: Upload recap artifact
         uses: actions/upload-artifact@v4
