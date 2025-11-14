@@ -367,11 +367,18 @@ def iterate_swaps_token_first(token: str, from_ts: int, to_ts: int):
     consecutive_old_pages = 0
     while True:
         params = {"chain": CHAIN, "order": "DESC", "limit": 100, "transactionTypes": "buy"}
-        if cursor: params["cursor"] = cursor
+        if cursor:
+            params["cursor"] = cursor
         try:
             j = moralis_get(f"/erc20/{token}/swaps", params=params)
         except BudgetExhausted as e:
-            log.warning(str(e)); return
+            log.warning(str(e))
+            return
+        except Exception as e:
+            # rete giù, timeout, ecc: meglio fermarsi puliti che far crashare tutto
+            log.warning(f"Swaps fetch failed for {token}: {e}")
+            return
+
         result = j.get("result") or []
         page += 1
         log.debug(f"[token page {page}] swaps: {len(result)} (cursor={'yes' if j.get('cursor') else 'no'})")
@@ -386,13 +393,18 @@ def iterate_swaps_token_first(token: str, from_ts: int, to_ts: int):
                 try:
                     ts = int(datetime.fromisoformat(str(ts_iso).replace("Z","+00:00")).timestamp())
                     ts_ok = (from_ts <= ts <= to_ts)
-                    if ts >= from_ts: page_all_before = False
-                    if ts_ok: any_in_window = True
+                    if ts >= from_ts:
+                        page_all_before = False
+                    if ts_ok:
+                        any_in_window = True
                 except Exception:
-                    page_all_before = False; any_in_window = True; ts_ok = True
+                    page_all_before = False
+                    any_in_window = True
+                    ts_ok = True
             if not ts_ok:
                 continue
-            yield s  # <<< NESSUN FILTRO PER PAIR/DEX
+            # nessun filtro per pair/DEX
+            yield s
 
         if any_in_window:
             consecutive_old_pages = 0
@@ -405,6 +417,7 @@ def iterate_swaps_token_first(token: str, from_ts: int, to_ts: int):
         cursor = j.get("cursor") or None
         if not cursor:
             return
+
 
 # -------------------- Enrichment (Moralis) -------------------- #
 

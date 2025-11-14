@@ -247,8 +247,22 @@ jobs:
           ts_compact = now.strftime("%Y%m%dT%H%M%SZ")
 
           for f in files:
-              with open(f, "r", encoding="utf-8") as fh:
-                  j = json.load(fh)
+              # 1) Skippa file vuoti o illeggibili
+              try:
+                  if os.path.getsize(f) == 0:
+                      print(f"[DEBUG] skip {f}: empty file")
+                      continue
+                  with open(f, "r", encoding="utf-8") as fh:
+                      j = json.load(fh)
+              except Exception as e:
+                  print(f"[DEBUG] skip {f}: {e}")
+                  continue
+
+              # 2) Se in futuro decidiamo di emettere JSON di errore dal finder,
+              #    li riconosciamo e non li salviamo in history
+              if isinstance(j, dict) and j.get("error"):
+                  print(f"[DEBUG] skip {f}: error field={j.get('error')}")
+                  continue
 
               sym = j.get("symbol") or os.path.basename(f).split("-")[1].split(".")[0]
               token_addr = j.get("token") or ""
@@ -265,7 +279,7 @@ jobs:
                   "main_pair_hint": pair,
                   "window_minutes": j.get("window_minutes"),
                   "stats": stats,
-                  "agg": agg
+                  "agg": agg,
               }
 
               daydir = os.path.join("history", now.strftime("%Y"), now.strftime("%m"), now.strftime("%d"))
@@ -274,6 +288,7 @@ jobs:
               with open(outp, "w", encoding="utf-8") as oh:
                   json.dump(logdoc, oh, ensure_ascii=False, indent=2)
               print("[LOG SAVED]", outp)
+
           PY
 
           git config user.name "github-actions[bot]"
