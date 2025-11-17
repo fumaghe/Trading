@@ -179,7 +179,7 @@ jobs:
                       iso_date = datetime.fromtimestamp(first_ts, tz=timezone.utc).strftime("%Y-%m-%d")
                       age_line = f"<i>Wallet creato il {iso_date} — {days} giorni</i>"
 
-                  # Link Zerion
+                  # Link Zerion (o DeBank / simile)
                   zerion_url = f"https://debank.com/profile/{addr}"
                   addr_short = short_addr(addr)
 
@@ -198,10 +198,25 @@ jobs:
 
                   txt = "\n".join(pieces)
                   idx = total_msgs + 1
-                  out_path = f"out/msgs/msg_{idx:03d}.html"
+                  base = f"msg_{idx:03d}"
+                  out_path = os.path.join("out", "msgs", base + ".html")
+                  meta_path = os.path.join("out", "msgs", base + ".meta.json")
+
+                  # Salva testo del messaggio
                   with open(out_path, "w", encoding="utf-8") as m:
                       m.write(txt)
-                  print(f"[DEBUG] msg creato per {sym}: {addr} -> {out_path}")
+
+                  # Salva meta con address completo per CopyTextButton
+                  meta = {
+                      "symbol": sym,
+                      "token": token_addr,
+                      "address": addr,
+                      "addr_short": addr_short,
+                  }
+                  with open(meta_path, "w", encoding="utf-8") as mf:
+                      json.dump(meta, mf, ensure_ascii=False)
+
+                  print(f"[DEBUG] msg creato per {sym}: {addr} -> {out_path} (meta: {meta_path})")
                   total_msgs += 1
 
           with open("out/msgs/COUNT.txt","w",encoding="utf-8") as f:
@@ -222,12 +237,32 @@ jobs:
           FILES=(out/msgs/msg_*.html)
           for f in "${FILES[@]}"; do
             TEXT="$(cat "$f")"
-            curl -sS -X POST "$API" \
-              --data-urlencode "chat_id=${TG_CHAT_ID}" \
-              --data-urlencode "text=$TEXT" \
-              -d "disable_web_page_preview=true" \
-              -d "parse_mode=HTML" \
-            || echo "Telegram send failed ($f)"
+            BASE="${f%.html}"
+            META="${BASE}.meta.json"
+
+            if [ -f "$META" ]; then
+              # Costruisci inline keyboard con CopyTextButton:
+              # testo = "📋 0x1234...abcd" (addr_short)
+              # copy_text.text = address completo
+              REPLY_MARKUP=$(jq -c '{inline_keyboard: [[{text: ("📋 " + (.addr_short // .address)), copy_text: {text: .address}}]]}' "$META")
+
+              curl -sS -X POST "$API" \
+                --data-urlencode "chat_id=${TG_CHAT_ID}" \
+                --data-urlencode "text=$TEXT" \
+                -d "disable_web_page_preview=true" \
+                -d "parse_mode=HTML" \
+                --data-urlencode "reply_markup=$REPLY_MARKUP" \
+              || echo "Telegram send failed ($f)"
+            else
+              # Fallback senza bottone (se per qualche motivo manca il meta)
+              curl -sS -X POST "$API" \
+                --data-urlencode "chat_id=${TG_CHAT_ID}" \
+                --data-urlencode "text=$TEXT" \
+                -d "disable_web_page_preview=true" \
+                -d "parse_mode=HTML" \
+              || echo "Telegram send failed ($f)"
+            fi
+
             sleep 0.6
           done
 
@@ -306,5 +341,6 @@ jobs:
             out/*.json
             out/*.txt
             out/msgs/*.html
+            out/msgs/*.meta.json
             ywf_cache.json
             history/**/*.json
