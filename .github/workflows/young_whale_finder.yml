@@ -20,7 +20,7 @@ jobs:
       # Opzionali:
       YWF_LOG: info
       YWF_FAST: "1"                 # limiti dinamici ON
-      YWF_TOPK: "20"
+      YWF_TOPK: "50"
       YWF_TARGET_WALLETS: "12"
       YWF_BUDGET_CALLS: "60"
       YWF_NO_DTB: "1"               # timestamp-only
@@ -76,7 +76,7 @@ jobs:
               --token ${ADDR} \
               --minutes 40 \
               --min-usd 100 \
-              --young-days 5"
+              --young-days 700"
             echo "CMD: $CMD"
 
             OUTJSON="out/out-${SYM}.json"
