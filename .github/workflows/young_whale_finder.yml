@@ -2,7 +2,7 @@ name: Young Whale Finder (every 20 min)
 
 on:
   schedule:
-    - cron: "*/20 * * * *"  
+    - cron: "*/20 * * * *"
   workflow_dispatch: {}
 
 permissions:
@@ -64,12 +64,13 @@ jobs:
           TOKENS["RIVER"]="0xdA7AD9dea9397cffdDAE2F8a052B82f1484252B3"
           TOKENS["KGEN"]="0xF3d5b4c34Ed623478cc5141861776E6cf7AE3A1E"
           TOKENS["SOON"]="0xb9E1Fd5A02D3A33b25a14d661414E6ED6954a721"
+          TOKENS["IRYS"]="0x91152B4Ef635403efBAe860edD0F8c321d7c035d"
 
           mkdir -p out
 
           EXIT_CODE=0
           # ordine fisso (inclusa RIVER)
-          for SYM in AIA BLESS B2 LA RIVER KGEN SOON; do
+          for SYM in AIA BLESS B2 LA RIVER KGEN SOON IRYS; do
             ADDR="${TOKENS[$SYM]}"
             echo "Running ${SYM} (${ADDR})"
             CMD="python young_whale_finder.py \

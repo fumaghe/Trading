@@ -1,347 +1,279 @@
-name: Young Whale Finder (every 20 min)
+name: Young Whale Recap (every 6 hours)
 
 on:
   schedule:
-    - cron: "*/20 * * * *"
+    - cron: "0 */6 * * *"  # ogni 6 ore (UTC)
   workflow_dispatch: {}
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  run-ywf:
+  recap-6h:
     runs-on: ubuntu-latest
     env:
       PYTHONIOENCODING: "utf-8"
       TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
       TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
-      MORALIS_API_KEY: ${{ secrets.MORALIS_API_KEY }}
-
-      # Opzionali:
-      YWF_LOG: info
-      YWF_FAST: "1"                 # limiti dinamici ON
-      YWF_TOPK: "50"
-      YWF_TARGET_WALLETS: "12"
-      YWF_BUDGET_CALLS: "60"
-      YWF_NO_DTB: "1"               # timestamp-only
-      YWF_CACHE: "ywf_cache.json"
-      YWF_WINDOW_SLACK: "90"
-      YWF_RPS: "2"
-      YWF_BALANCE_TTL: "0"          # sempre bilanci freschi
-
+      RECAP_HOURS: "6"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          persist-credentials: true
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install deps
-        run: |
-          python -m pip install --upgrade pip
-          pip install requests tenacity rich
-          sudo apt-get update
-          sudo apt-get install -y jq
-
-      - name: Run YWF on tokens (sequential)
-        id: ywf
+      - name: Build 6h recap message
+        id: recap
         shell: bash
         run: |
-          set -o pipefail
-          export LC_ALL=C.UTF-8
-          export LANG=C.UTF-8
-
-          declare -A TOKENS
-          TOKENS["AIA"]="0x48a18A4782b65a0fBed4dcA608BB28038B7bE339"
-          TOKENS["BLESS"]="0x7C8217517ed4711fe2DECCdFefFE8d906b9Ae11F"
-          TOKENS["B2"]="0x783c3f003f172c6Ac5AC700218a357d2D66Ee2a2"
-          TOKENS["LA"]="0x389AD4bb96d0D6EE5B6eF0EFAF4b7db0bA2e02a0"
-          TOKENS["RIVER"]="0xdA7AD9dea9397cffdDAE2F8a052B82f1484252B3"
-          TOKENS["KGEN"]="0xF3d5b4c34Ed623478cc5141861776E6cf7AE3A1E"
-          TOKENS["SOON"]="0xb9E1Fd5A02D3A33b25a14d661414E6ED6954a721"
-          TOKENS["IRYS"]="0x91152B4Ef635403efBAe860edD0F8c321d7c035d"
-
-          mkdir -p out
-
-          EXIT_CODE=0
-          # ordine fisso (inclusa RIVER)
-          for SYM in AIA BLESS B2 LA RIVER KGEN SOON IRYS; do
-            ADDR="${TOKENS[$SYM]}"
-            echo "Running ${SYM} (${ADDR})"
-            CMD="python young_whale_finder.py \
-              --token ${ADDR} \
-              --minutes 40 \
-              --min-usd 100 \
-              --young-days 5"
-            echo "CMD: $CMD"
-
-            OUTJSON="out/out-${SYM}.json"
-            ERRFILE="out/err-${SYM}.txt"
-
-            # stdout -> JSON, stderr -> log
-            bash -lc "$CMD" 1>"$OUTJSON" 2>"$ERRFILE" || EXIT_CODE=$?
-
-            # Sanitize
-            tr -d '\000' < "$OUTJSON" > "out/tmp-${SYM}.json" || true
-            mv "out/tmp-${SYM}.json" "$OUTJSON"
-            tr -d '\000' < "$ERRFILE" > "out/err-${SYM}.san.txt" || true
-            mv "out/err-${SYM}.san.txt" "$ERRFILE"
-
-            # Debug: conteggio results + stats + prime righe stderr
-            if command -v jq >/dev/null 2>&1; then
-              COUNT=$(jq -r '(.results|length) // 0' "$OUTJSON" 2>/dev/null || echo 0)
-              echo "[DEBUG] ${SYM}: results=$COUNT"
-              echo -n "[DEBUG] ${SYM}: stats="
-              jq -r '" kept=\(.stats.wallet_tenuti // 0) buys_ge_min=\(.stats.buys_ge_min_usd // 0) wallets_seen=\(.stats.wallet_unici_ge_min_usd // 0)"' "$OUTJSON" 2>/dev/null || true
-            else
-              echo "[WARN] jq non disponibile; salto debug JSON."
-            fi
-            echo "[DEBUG] ${SYM}: first 20 lines of stderr:"
-            head -n 20 "$ERRFILE" || true
-            echo "----------------------------------------"
-          done
-
-          echo "exit_code=$EXIT_CODE" >> "$GITHUB_OUTPUT"
-
-      - name: Build per-wallet Telegram messages (only if results exist)
-        shell: bash
-        run: |
-          mkdir -p out/msgs
+          mkdir -p out/recap
           python - << 'PY'
-          import os, json, html, glob, time
-          from datetime import datetime, timezone
+          import os, json, glob, html
+          from datetime import datetime, timezone, timedelta
 
-          # SOGLIA: non inviare se balance_usd < 10000
-          THRESHOLD = 10000.0
+          HOURS = int(os.getenv("RECAP_HOURS", "6"))
+          now = datetime.now(timezone.utc)
+          since = now - timedelta(hours=HOURS)
+          now_ts = now.timestamp()
+          since_ts = since.timestamp()
 
-          def fmt_money(v):
-              try:
-                  return f"${float(v):,.2f}".replace(",", " ")
-              except Exception:
-                  return str(v)
+          files = sorted(glob.glob("history/**/*.json", recursive=True))
+          if not files:
+              msg = f"🧭 <b>Recap ultime {HOURS}h</b>\nNessun dato disponibile."
+              open("out/recap/recap.html","w",encoding="utf-8").write(msg)
+              raise SystemExit(0)
+
+          def dex_link(pair, token):
+              if pair: return f"https://dexscreener.com/bsc/{pair}"
+              return f"https://dexscreener.com/bsc/{token}"
+
+          def zerion(addr):
+              return f"https://debank.com/profile/{addr}"
 
           def short_addr(a: str) -> str:
               a = (a or "").strip()
-              if a.startswith("0x") and len(a) > 10:
+              if a.startswith("0x") and len(a) > 12:
+                  return a[:6] + "..." + a[-4:]
+              if len(a) > 12:
                   return a[:6] + "..." + a[-4:]
               return a
 
-          files = sorted(glob.glob("out/out-*.json"))
-          total_msgs = 0
+          def fmt_money(v):
+              try:
+                  return f"${float(v):,.0f}".replace(",", " ")
+              except Exception:
+                  return str(v)
+
+          def parse_ts(j):
+              ts = j.get("ts")
+              if ts:
+                  try:
+                      return datetime.fromisoformat(ts.replace("Z","+00:00")).timestamp()
+                  except Exception:
+                      pass
+              return None
+
+          per_token = {}
+          overall_top = {}
+          addr_name = {}
+
+          runs_total = 0
+          iterations_total = 0
+          wallets_seen_total = 0
+          buys_usd_total = 0.0
+
           for f in files:
               try:
-                  with open(f, "r", encoding="utf-8") as fh:
-                      j = json.load(fh)
-              except Exception as e:
-                  print(f"[DEBUG] skip {f}: {e}")
+                  j = json.load(open(f,"r",encoding="utf-8"))
+              except Exception:
+                  continue
+              ts_run = parse_ts(j)
+              if ts_run is None or ts_run < since_ts or ts_run > now_ts:
                   continue
 
-              sym = j.get("symbol") or os.path.basename(f).split("-")[1].split(".")[0]
+              sym = j.get("symbol") or "TOKEN"
               token_addr = j.get("token") or ""
               pair = j.get("main_pair_hint") or ""
-              results = j.get("results") or []
-              if not results:
-                  print(f"[DEBUG] {sym}: nessun results nel JSON {f}")
-                  continue
+              price = j.get("price_usd")
 
-              # Link DexScreener: preferisci pair; fallback alla pagina token
-              if pair:
-                  dex_url = f"https://dexscreener.com/bsc/{pair}"
-              else:
-                  dex_url = f"https://dexscreener.com/bsc/{token_addr}"
+              stats = j.get("stats") or {}
+              agg = j.get("agg") or {}
 
-              for r in results:
-                  user = r.get("user_name") or "Utente"
-                  addr = (r.get("address","") or "").strip()
-                  balu = r.get("balance_usd")
+              d = per_token.setdefault(sym, {
+                "token": token_addr,
+                "pair": pair,
+                "runs": 0,
+                "iterations": 0,
+                "wallets_seen": 0,
+                "buys_usd": 0.0,
+                "prices": [],
+                "top_map": {}
+              })
 
-                  # --- FILTRO BILANCIO ---
+              d["runs"] += 1
+              d["iterations"] += int(stats.get("total_swaps_scanned") or 0)
+              d["wallets_seen"] += int(agg.get("buyers_unique_all") or stats.get("wallet_unici_ge_min_usd") or 0)
+              try:
+                  d["buys_usd"] += float(agg.get("buyers_total_usd_window_all") or 0.0)
+              except Exception:
+                  pass
+              if price is not None:
                   try:
-                      balf = float(balu)
+                      d["prices"].append((ts_run, float(price)))
                   except Exception:
-                      balf = None
-                  if balf is None or balf < THRESHOLD:
-                      print(f"[DEBUG] skip {sym}: {addr} balance_usd={balu} < {THRESHOLD}")
+                      pass
+
+              for w in (agg.get("top_spenders_all") or []):
+                  addr = (w.get("address") or "").strip()
+                  amt = float(w.get("sum_buys_usd_window") or 0.0)
+                  name = (w.get("user_name") or "").strip()  # nome presente SOLO se wallet validato
+                  if not addr:
                       continue
-                  # ------------------------
+                  d["top_map"][addr] = d["top_map"].get(addr, 0.0) + amt
+                  overall_top[addr] = overall_top.get(addr, 0.0) + amt
+                  if name:
+                      addr_name[addr] = name  # non sovrascrivo se vuoto
 
-                  bought = r.get("sum_buys_usd_window")
+          # Aggregati globali
+          for sym, d in per_token.items():
+              runs_total += d["runs"]
+              iterations_total += d["iterations"]
+              wallets_seen_total += d["wallets_seen"]
+              buys_usd_total += d["buys_usd"]
 
-                  # Età wallet
-                  first_ts = r.get("first_tx_ts")
-                  age_line = ""
-                  if isinstance(first_ts, (int, float)) and first_ts > 0:
-                      days = max(0, int((time.time() - float(first_ts)) // 86400))
-                      iso_date = datetime.fromtimestamp(first_ts, tz=timezone.utc).strftime("%Y-%m-%d")
-                      age_line = f"<i>Wallet creato il {iso_date} — {days} giorni</i>"
+          header = f'🧭 <b>Recap ultime {HOURS}h</b> (UTC)\n<code>{since.strftime("%Y-%m-%d %H:%M")} → {now.strftime("%Y-%m-%d %H:%M")}</code>\n'
+          ov1 = f'📦 Run: <b>{runs_total}</b>  •  🔁 Iterazioni: <b>{iterations_total}</b>\n'
+          ov2 = f'👛 Wallet analizzati (stima): <b>{wallets_seen_total}</b>\n'
+          ov3 = f'💵 Volume acquisti (>= soglia): <b>{fmt_money(buys_usd_total)}</b>\n'
+          parts = [header, ov1, ov2, ov3, ""]
 
-                  # Link Zerion (o DeBank / simile)
-                  zerion_url = f"https://debank.com/profile/{addr}"
-                  addr_short = short_addr(addr)
+          # Top overall (max 5) — testo link = nome se presente, altrimenti address troncato
+          top_overall = sorted(overall_top.items(), key=lambda kv: kv[1], reverse=True)[:5]
+          if top_overall:
+              parts.append("👑 <b>Top buyer globali</b>")
+              lines = []
+              for i,(addr,amt) in enumerate(top_overall, start=1):
+                  display = addr_name.get(addr, short_addr(addr))
+                  link = zerion(addr)
+                  lines.append(f'{i}) <a href="{link}"><b>{html.escape(display)}</b></a> — {fmt_money(amt)}')
+              parts.append("\n".join(lines))
+              parts.append("")
 
-                  # Messaggio HTML:
-                  header = f'🐋 <a href="{dex_url}"><u>{html.escape(sym)}</u></a> — <b>{html.escape(user)}</b>'
-                  line_buys = f"🪙 Acquisti nella finestra: <b>{fmt_money(bought)}</b>"
-                  line_bal = f"Balance USD: <b>{fmt_money(balu)}</b>"
-                  line_addr = f"Wallet: {html.escape(addr_short)}"
-                  line_zerion = f'<a href="{zerion_url}">🏛️ Apri Wallet</a>'
+          # Sezioni per token
+          for sym, d in sorted(per_token.items()):
+              ptxt = ""
+              if d["prices"]:
+                  d["prices"].sort(key=lambda x: x[0])
+                  p0 = d["prices"][0][1]
+                  p1 = d["prices"][-1][1]
+                  if p0 and p1 is not None:
+                      delta = p1 - p0
+                      pct = (delta / p0 * 100.0) if p0 != 0 else 0.0
+                      sign = "↗️" if pct > 0 else ("↘️" if pct < 0 else "→")
+                      ptxt = f"💱 Prezzo: <b>{p1:.6f}</b> ({sign} {pct:+.2f}%)"
 
-                  # ORDINE: buys -> balance -> wallet -> (age) -> Zerion
-                  pieces = [header, line_buys, line_bal, line_addr]
-                  if age_line:
-                      pieces.append(age_line)
-                  pieces.append(line_zerion)
+              link = dex_link(d["pair"], d["token"])
+              head = f'🪙 <a href="{link}"><b>{html.escape(sym)}</b></a>'
+              meta = f' — run: <b>{d["runs"]}</b> • 🔁 <b>{d["iterations"]}</b> • 👛 <b>{d["wallets_seen"]}</b> • 💵 <b>{fmt_money(d["buys_usd"])}</b>'
+              parts.append(head + meta)
+              if ptxt:
+                  parts.append(ptxt)
 
-                  txt = "\n".join(pieces)
-                  idx = total_msgs + 1
-                  base = f"msg_{idx:03d}"
-                  out_path = os.path.join("out", "msgs", base + ".html")
-                  meta_path = os.path.join("out", "msgs", base + ".meta.json")
+              # top buyers per token (max 3) — testo link troncato se manca nome
+              top_tok = sorted(d["top_map"].items(), key=lambda kv: kv[1], reverse=True)[:3]
+              if top_tok:
+                  lines = []
+                  for i,(addr,amt) in enumerate(top_tok, start=1):
+                      display = addr_name.get(addr, short_addr(addr))
+                      linkw = zerion(addr)
+                      lines.append(f'{i}) <a href="{linkw}"><b>{html.escape(display)}</b></a> — {fmt_money(amt)}')
+                  parts.append("👑 Top buyer:\n" + "\n".join(lines))
+              parts.append("")
 
-                  # Salva testo del messaggio
-                  with open(out_path, "w", encoding="utf-8") as m:
-                      m.write(txt)
-
-                  # Salva meta con address completo per CopyTextButton
-                  meta = {
-                      "symbol": sym,
-                      "token": token_addr,
-                      "address": addr,
-                      "addr_short": addr_short,
-                  }
-                  with open(meta_path, "w", encoding="utf-8") as mf:
-                      json.dump(meta, mf, ensure_ascii=False)
-
-                  print(f"[DEBUG] msg creato per {sym}: {addr} -> {out_path} (meta: {meta_path})")
-                  total_msgs += 1
-
-          with open("out/msgs/COUNT.txt","w",encoding="utf-8") as f:
-              f.write(str(total_msgs))
+          msg = "\n".join(parts).strip()
+          open("out/recap/recap.html","w",encoding="utf-8").write(msg)
           PY
 
-      - name: Send Telegram — per-wallet messages (only if any)
+      - name: Send Telegram — 6h Recap (auto-split by line)
         if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
         shell: bash
         run: |
-          COUNT=$(cat out/msgs/COUNT.txt 2>/dev/null || echo "0")
-          if [ "$COUNT" = "0" ]; then
-            echo "Nessun wallet trovato sopra soglia: non invio nulla su Telegram."
+          FILE="out/recap/recap.html"
+          if [ ! -f "$FILE" ]; then
+            echo "Nessun recap generato."
             exit 0
           fi
+
+          mkdir -p out/recap/parts
+
+          # Split del messaggio in più parti rispettando i newline
+          python - << 'PY'
+          import os
+
+          MAX_LEN = 3500  # sicuro sotto il limite Telegram (4096)
+          src = "out/recap/recap.html"
+          dst_dir = "out/recap/parts"
+          os.makedirs(dst_dir, exist_ok=True)
+
+          with open(src, "r", encoding="utf-8") as f:
+              text = f.read().strip()
+
+          if not text:
+              raise SystemExit(0)
+
+          lines = text.split("\n")
+          parts = []
+          buf = ""
+
+          for line in lines:
+              candidate = (buf + "\n" + line) if buf else line
+              if len(candidate) > MAX_LEN:
+                  if buf:
+                      parts.append(buf.rstrip())
+                  buf = line
+                  # Se una singola riga è più lunga di MAX_LEN, la mandiamo comunque intera
+                  if len(buf) > MAX_LEN:
+                      parts.append(buf)
+                      buf = ""
+              else:
+                  buf = candidate
+
+          if buf:
+              parts.append(buf.rstrip())
+
+          for idx, chunk in enumerate(parts, start=1):
+              out_path = os.path.join(dst_dir, f"recap_part_{idx:02d}.html")
+              with open(out_path, "w", encoding="utf-8") as f:
+                  f.write(chunk)
+          PY
+
           API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
           shopt -s nullglob
-          FILES=(out/msgs/msg_*.html)
-          for f in "${FILES[@]}"; do
+          PARTS=(out/recap/parts/recap_part_*.html)
+
+          if [ ${#PARTS[@]} -eq 0 ]; then
+            echo "Nessun contenuto da inviare."
+            exit 0
+          fi
+
+          for f in "${PARTS[@]}"; do
             TEXT="$(cat "$f")"
-            BASE="${f%.html}"
-            META="${BASE}.meta.json"
-
-            if [ -f "$META" ]; then
-              # Costruisci inline keyboard con CopyTextButton:
-              # testo = "📋 0x1234...abcd" (addr_short)
-              # copy_text.text = address completo
-              REPLY_MARKUP=$(jq -c '{inline_keyboard: [[{text: ("📋 " + (.addr_short // .address)), copy_text: {text: .address}}]]}' "$META")
-
-              curl -sS -X POST "$API" \
-                --data-urlencode "chat_id=${TG_CHAT_ID}" \
-                --data-urlencode "text=$TEXT" \
-                -d "disable_web_page_preview=true" \
-                -d "parse_mode=HTML" \
-                --data-urlencode "reply_markup=$REPLY_MARKUP" \
-              || echo "Telegram send failed ($f)"
-            else
-              # Fallback senza bottone (se per qualche motivo manca il meta)
-              curl -sS -X POST "$API" \
-                --data-urlencode "chat_id=${TG_CHAT_ID}" \
-                --data-urlencode "text=$TEXT" \
-                -d "disable_web_page_preview=true" \
-                -d "parse_mode=HTML" \
-              || echo "Telegram send failed ($f)"
-            fi
-
+            curl -sS -X POST "$API" \
+              --data-urlencode "chat_id=${TG_CHAT_ID}" \
+              --data-urlencode "text=$TEXT" \
+              -d "disable_web_page_preview=true" \
+              -d "parse_mode=HTML" \
+            || echo "Telegram send failed ($f)"
             sleep 0.6
           done
 
-      # Persisti log compatti per il recap 6h
-      - name: Persist compact logs for recap (commit to repo)
-        shell: bash
-        run: |
-          set -e
-          mkdir -p history
-          python - << 'PY'
-          import os, json, glob, time
-          from datetime import datetime, timezone
-
-          files = sorted(glob.glob("out/out-*.json"))
-          now = datetime.now(timezone.utc)
-          ts_iso = now.isoformat().replace("+00:00","Z")
-          ts_compact = now.strftime("%Y%m%dT%H%M%SZ")
-
-          for f in files:
-              # 1) Skippa file vuoti o illeggibili
-              try:
-                  if os.path.getsize(f) == 0:
-                      print(f"[DEBUG] skip {f}: empty file")
-                      continue
-                  with open(f, "r", encoding="utf-8") as fh:
-                      j = json.load(fh)
-              except Exception as e:
-                  print(f"[DEBUG] skip {f}: {e}")
-                  continue
-
-              # 2) Se in futuro decidiamo di emettere JSON di errore dal finder,
-              #    li riconosciamo e non li salviamo in history
-              if isinstance(j, dict) and j.get("error"):
-                  print(f"[DEBUG] skip {f}: error field={j.get('error')}")
-                  continue
-
-              sym = j.get("symbol") or os.path.basename(f).split("-")[1].split(".")[0]
-              token_addr = j.get("token") or ""
-              price = j.get("price_usd")
-              stats = j.get("stats") or {}
-              agg = j.get("agg") or {}
-              pair = j.get("main_pair_hint")
-
-              logdoc = {
-                  "ts": ts_iso,
-                  "symbol": sym,
-                  "token": token_addr,
-                  "price_usd": price,
-                  "main_pair_hint": pair,
-                  "window_minutes": j.get("window_minutes"),
-                  "stats": stats,
-                  "agg": agg,
-              }
-
-              daydir = os.path.join("history", now.strftime("%Y"), now.strftime("%m"), now.strftime("%d"))
-              os.makedirs(daydir, exist_ok=True)
-              outp = os.path.join(daydir, f"{sym}-{ts_compact}.json")
-              with open(outp, "w", encoding="utf-8") as oh:
-                  json.dump(logdoc, oh, ensure_ascii=False, indent=2)
-              print("[LOG SAVED]", outp)
-
-          PY
-
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add history || true
-          git commit -m "chore: persist YWF compact logs $(date -u +'%Y-%m-%dT%H:%MZ')" || echo "No changes to commit"
-          git push || echo "Nothing to push"
-
-      - name: Upload artifacts (logs & outputs)
-        if: always()
+      - name: Upload recap artifact
         uses: actions/upload-artifact@v4
         with:
-          name: young-whale-finder-logs
-          path: |
-            out/*.json
-            out/*.txt
-            out/msgs/*.html
-            out/msgs/*.meta.json
-            ywf_cache.json
-            history/**/*.json
+          name: young-whale-recap-6h
+          path: out/recap/recap.html
