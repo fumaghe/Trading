@@ -44,7 +44,6 @@ jobs:
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
           fi
-          # Runtime deps necessari (defiFunzionante.py importa pandas)
           pip install requests tenacity rich web3 pandas numpy
 
       - name: Run run_pipeline.py
@@ -62,7 +61,6 @@ jobs:
           OUTFILE=out.txt
           ERRFILE=err.txt
 
-          # Non mascherare l'exit code: catturalo davvero
           set +e
           bash -lc "$CMD" >"$OUTFILE" 2>"$ERRFILE"
           CODE=$?
@@ -70,7 +68,6 @@ jobs:
 
           echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
 
-          # Sanifica e prepara log sintetici
           SAN_OUT="out.sanitized.txt"
           SAN_ERR="err.sanitized.txt"
           tr -d '\000' < "$OUTFILE" > "$SAN_OUT" || true
@@ -101,6 +98,8 @@ jobs:
           EXIT="${{ steps.screener.outputs.exit_code }}"
           if [ "$EXIT" = "0" ]; then
             HEADER="✅ Manipulation Screener OK"
+          elif [ "$EXIT" = "2" ]; then
+            HEADER="⚠️ Nessuna coin TOP trovata"
           else
             HEADER="❌ Screener ERROR ($EXIT)"
           fi
