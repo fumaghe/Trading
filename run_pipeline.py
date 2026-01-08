@@ -2,7 +2,6 @@
 # -*- coding: utf-8 -*-
 
 import argparse
-import os
 import re
 import subprocess
 import sys
@@ -10,7 +9,7 @@ import time
 from decimal import Decimal
 from pathlib import Path
 from html import escape as htmlesc
-from typing import Optional
+from typing import Optional, Tuple
 
 import requests
 
@@ -20,15 +19,12 @@ e conversione degli importi in USD (≈ USDT) usando priceUsd della *stessa* pai
 Ordina i risultati per SCORE100 = (market cap USD) / (costo +100% in USD), in ordine decrescente.
 Mostra anche SCORE50 e SCORE200.
 
-Fix (freshness):
-- Aggiunti flag per forzare refresh cache screener test4.py:
-  --refresh-perps / --refresh-cg / --refresh-all
-- Aggiunti pass-through TTL a test4.py:
-  --ttl-perps / --ttl-cg
-- La cache CoinGecko interna a run_pipeline (cg coins_list include_platform) può essere forzata con --refresh-cg/--refresh-all
+Fix: gestione "no TOP"
+- Se test4.py non produce coin TOP:
+  - crea state/telegram/msg_summary.html con messaggio chiaro
+  - exit code = 2 (warning) invece di 0
 
-Esempio:
-python run_pipeline.py --rpc https://bsc-dataseed.binance.org --min-liq 200000 --workers 12 --max-tickers-scan 40 --dominance 0.30 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100 --refresh-all
+Nota: test4.py ora scrive diagnostica su STDERR quando TOP=0.
 """
 
 UA = (
@@ -45,8 +41,6 @@ CG_COIN_URL = "https://api.coingecko.com/api/v3/coins/{id}?localization=false&ti
 
 TOP_HEADER = "— Tutti e 3 i parametri (TOP) —"
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
-
-# ---------------- utils logging ---------------- #
 
 def log(msg: str):
     print(msg, flush=True)
@@ -74,7 +68,7 @@ def run_test4_and_capture(
     refresh_perps: bool = False,
     refresh_cg: bool = False,
     refresh_all: bool = False,
-):
+) -> Tuple[str, str]:
     cmd = [
         python_bin,
         "test4.py",
@@ -89,13 +83,11 @@ def run_test4_and_capture(
         "--funnel-show", str(funnel_show),
     ]
 
-    # Pass-through TTL
     if ttl_perps is not None:
         cmd += ["--ttl-perps", str(int(ttl_perps))]
     if ttl_cg is not None:
         cmd += ["--ttl-cg", str(int(ttl_cg))]
 
-    # Pass-through refresh flags
     if refresh_all:
         cmd += ["--refresh-all"]
     else:
@@ -105,7 +97,9 @@ def run_test4_and_capture(
             cmd += ["--refresh-cg"]
 
     res = subprocess.run(cmd, capture_output=True, text=True, check=True)
-    return ANSI_RE.sub("", res.stdout or "")
+    stdout = ANSI_RE.sub("", res.stdout or "")
+    stderr = ANSI_RE.sub("", res.stderr or "")
+    return stdout, stderr
 
 def parse_top_only(stdout: str):
     entries = []
@@ -347,21 +341,10 @@ def compute_push_amounts_with_defi(pool: str, rpc_url: str, w3=None):
         "plus200_str": rows[2]["token1_needed"],
     }
 
-def classify_non_v3_error(err_msg: str) -> bool:
-    s = (err_msg or "").lower()
-    hints = [
-        "function selector",
-        "execution reverted",
-        "abi",
-        "missing required key",
-        "could not decode",
-    ]
-    return any(h in s for h in hints)
-
 # ---------------- main ---------------- #
 
 def main():
-    ap = argparse.ArgumentParser(description="Pipeline: screener TOP (con pool) -> analisi DeFi (+50, +100%, +200%) con conversione ≈ USDT e SCORE = MC/Cost")
+    ap = argparse.ArgumentParser(description="Pipeline: screener TOP (con pool) -> analisi DeFi (+50, +100%, +200%)")
     ap.add_argument("--rpc", default="https://bsc-dataseed.binance.org")
     ap.add_argument("--python-bin", default=sys.executable)
     ap.add_argument("--min-liq", type=int, default=200000)
@@ -375,15 +358,13 @@ def main():
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--sleep", type=float, default=0.0)
     ap.add_argument("--no-cg-fallback", action="store_true")
-    ap.add_argument("--debug-screener", action="store_true", help="Stampa lo stdout grezzo di test4.py")
-    ap.add_argument("--per_pool_debug", action="store_true", help="Stampa l'errore dettagliato per le pool che falliscono")
+    ap.add_argument("--debug-screener", action="store_true")
 
-    # FIX: pass-through TTL + refresh
-    ap.add_argument("--ttl-perps", type=int, default=None, help="Override TTL cache PERPS per test4.py (sec)")
-    ap.add_argument("--ttl-cg", type=int, default=None, help="Override TTL cache CoinGecko per test4.py (sec)")
-    ap.add_argument("--refresh-perps", action="store_true", help="Forza refresh cache PERPS in test4.py per questo run")
-    ap.add_argument("--refresh-cg", action="store_true", help="Forza refresh cache CoinGecko in test4.py per questo run")
-    ap.add_argument("--refresh-all", action="store_true", help="Equivalente a --refresh-perps --refresh-cg")
+    ap.add_argument("--ttl-perps", type=int, default=None)
+    ap.add_argument("--ttl-cg", type=int, default=None)
+    ap.add_argument("--refresh-perps", action="store_true")
+    ap.add_argument("--refresh-cg", action="store_true")
+    ap.add_argument("--refresh-all", action="store_true")
 
     args = ap.parse_args()
 
@@ -392,7 +373,7 @@ def main():
     # 1) Screener
     log("==> Avvio screener (test4.py)...")
     try:
-        stdout = run_test4_and_capture(
+        stdout, stderr = run_test4_and_capture(
             python_bin=args.python_bin,
             min_liq=args.min_liq,
             workers=args.workers,
@@ -410,19 +391,36 @@ def main():
         )
     except subprocess.CalledProcessError as e:
         log_err(0, 0, "-", "-", "Lancio test4.py fallito")
-        print(e.stdout)
-        print(e.stderr, file=sys.stderr)
+        print(e.stdout or "")
+        print(e.stderr or "", file=sys.stderr)
         sys.exit(1)
 
     if args.debug_screener:
         print(">> ===== Screener stdout (debug) =====")
         print(stdout)
+        print(">> ===== Screener stderr (debug) =====", file=sys.stderr)
+        print(stderr, file=sys.stderr)
         print(">> ===================================")
 
     coins = parse_top_only(stdout)
     if not coins:
+        # Crea comunque un summary telegram leggibile
+        tel_dir = Path("state/telegram")
+        tel_dir.mkdir(parents=True, exist_ok=True)
+
+        diag = (stderr or "").strip()
+        msg = "⚠️ Nessuna coin in TOP trovata dall'output di test4.py."
+        if diag:
+            msg += "\n\n<pre>" + htmlesc(diag[-3500:]) + "</pre>"
+
+        (tel_dir / "msg_summary.html").write_text(msg, encoding="utf-8")
+
         log("Nessuna coin in TOP trovata dall'output di test4.py.")
-        sys.exit(0)
+        if diag:
+            print(diag, file=sys.stderr)
+
+        # Exit code 2 = warning "no TOP"
+        sys.exit(2)
 
     if args.limit and args.limit > 0:
         coins = coins[:args.limit]
