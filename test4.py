@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Crypto Screener (v2.3.2) — Output TOP-only con Pool address
+Crypto Screener (v2.3.3) — Output TOP-only con Pool address
 
 Fix (cache freshness):
-- Ridotti TTL di default per evitare di “perdere” nuove coin appena listate:
-  - PERPS TTL default: 6h (prima: 7 giorni)
-  - CoinGecko TTL default: 12h (prima: 48h)
-- Aggiunti flag:
-  --refresh-perps   ignora cache perps (Binance/Bybit) per questo run
-  --refresh-cg      ignora cache CoinGecko (coins_list + coin detail) per questo run
-  --refresh-all     equivalente a --refresh-perps --refresh-cg
+- TTL separato per CoinGecko coins list (seed mapping) vs coin detail:
+  - CoinGecko coins list TTL default: 2h (per vedere prima le coin nuove)
+  - CoinGecko coin detail TTL default: 12h (rimane più alto per non fare troppi fetch)
+- Retry intelligente sul seed mapping:
+  se alcuni simboli non vengono mappati a CG id con la lista in cache,
+  forza un refresh della lista UNA VOLTA e riprova i missing.
 
 Resto invariato:
-- Output SOLO TOP, nessun log extra.
+- Output SOLO TOP, nessun log extra (quiet=True in main)
 """
 
 from __future__ import annotations
@@ -109,9 +108,12 @@ class Settings:
     max_tickers_scan: int = 15
     bitget_dominance: float = 0.60  # 0..1
 
-    # TTLs (FIX: più “fresh” di default)
-    ttl_cg_coin_sec: int = 12 * 3600     # prima: 48h
-    ttl_perps_sec: int = 6 * 3600        # prima: 7 giorni
+    # TTLs
+    # Coin detail TTL (tickers=true) resta più alto per evitare troppe chiamate
+    ttl_cg_coin_sec: int = 12 * 3600     # default 12h
+    # Coin list TTL (include_platform) più basso per vedere prima coin nuove
+    ttl_cg_list_sec: int = 2 * 3600      # default 2h
+    ttl_perps_sec: int = 6 * 3600        # default 6h
     ttl_dexscreener_sec: int = 24 * 3600
 
     # Skip coins stabili per N giorni
@@ -135,7 +137,7 @@ class Settings:
     # Seed mode: "perps" (default) o "cg"
     seed_from: str = "perps"
 
-    # FIX: force refresh flags
+    # force refresh flags
     refresh_perps: bool = False
     refresh_cg: bool = False
 
@@ -160,7 +162,8 @@ def log_info(msg: str):
 
 def read_json(path: str) -> Optional[dict]:
     p = Path(path)
-    if not p.exists(): return None
+    if not p.exists():
+        return None
     try:
         with p.open("r", encoding="utf-8") as f:
             return json.load(f)
@@ -173,14 +176,16 @@ def write_json(path: str, data: dict):
         json.dump(data, f)
 
 def cache_get(path: str, ttl_sec: int) -> Optional[dict]:
-    # FIX: se ttl_sec <= 0 => no-cache
+    # se ttl_sec <= 0 => no-cache
     if ttl_sec <= 0:
         return None
     p = Path(path)
-    if not p.exists(): return None
+    if not p.exists():
+        return None
     try:
         age = time.time() - p.stat().st_mtime
-        if age > ttl_sec: return None
+        if age > ttl_sec:
+            return None
         with p.open("r", encoding="utf-8") as f:
             return json.load(f)
     except Exception:
@@ -244,16 +249,19 @@ def load_bybit_perp_bases_cached(force_refresh: bool = False) -> Dict[str, Any]:
         cursor = None
         while True:
             params = {"category": "linear", "limit": 1000}
-            if cursor: params["cursor"] = cursor
+            if cursor:
+                params["cursor"] = cursor
             data = Http.get(BYBIT_LINEAR, params=params).json()
             lst = (data.get("result") or {}).get("list") or []
             for s in lst:
                 if s.get("status") == "Trading" and s.get("contractType") in ("LinearPerpetual", "LinearFutures"):
                     symbol = s.get("symbol", "")
                     base = re.sub(r"(USDT|USDC)$", "", symbol).upper()
-                    if base: res[base] = s
+                    if base:
+                        res[base] = s
             cursor = (data.get("result") or {}).get("nextPageCursor")
-            if not cursor: break
+            if not cursor:
+                break
         write_json(cache_path, res)
         return res
     except Exception:
@@ -266,7 +274,8 @@ def base_symbol_candidates(base: str) -> List[str]:
     for k in ("10", "100", "1000", "10000"):
         cands.add(f"{k}{base}")
     m = re.match(r"^(10|100|1000|10000)([A-Z0-9]+)$", base)
-    if m: cands.add(m.group(2))
+    if m:
+        cands.add(m.group(2))
     return list(cands)
 
 def has_perps_on_both(binance_bases: Dict[str, Any], bybit_bases: Dict[str, Any], symbol: str) -> bool:
@@ -295,7 +304,8 @@ def bsc_contract_address(coin: Dict[str, Any]) -> Optional[str]:
     for key in platforms.keys():
         if key and key.lower() in ("binance-smart-chain", "bsc", "bnb-smart-chain", "bnb"):
             addr = platforms[key]
-            if addr: return addr.lower()
+            if addr:
+                return addr.lower()
     return None
 
 def top_spot_cex_bitget_ok(coin: Dict[str, Any], dominance: float, max_scan: int) -> Tuple[bool, Optional[str]]:
@@ -323,8 +333,10 @@ def top_spot_cex_bitget_ok(coin: Dict[str, Any], dominance: float, max_scan: int
         vol = None
         for k in ("usd", "eur", "btc"):
             if conv.get(k) is not None:
-                vol = float(conv[k]); break
-        if vol is None: vol = 0.0
+                vol = float(conv[k])
+                break
+        if vol is None:
+            vol = 0.0
         seen += 1
         sum_vol += vol
         if vol > best_vol:
@@ -341,7 +353,7 @@ def top_spot_cex_bitget_ok(coin: Dict[str, Any], dominance: float, max_scan: int
 def load_cg_coins_list_cached(cg_rl: RateLimiter, force_refresh: bool = False) -> List[Dict[str, Any]]:
     cache_path = joinp(settings.cache_root, "coingecko", "coins_list_include_platform.json")
     if not force_refresh:
-        j = cache_get(cache_path, settings.ttl_cg_coin_sec)
+        j = cache_get(cache_path, settings.ttl_cg_list_sec)
         if j is not None:
             return j
     url = f"{COINGECKO}/coins/list?include_platform=true"
@@ -394,7 +406,8 @@ def main_bsc_pair_on_pancake(addr: str, ds_rl: RateLimiter) -> Optional[Dict[str
             continue
         if liq > best_liq:
             best_liq, best = liq, p
-    if not best: return None
+    if not best:
+        return None
     dexid = (best.get("dexId") or "").lower()
     if "pancake" not in dexid:
         return None
@@ -409,7 +422,7 @@ def save_state(state: Dict[str, Any]):
     pass
 
 def stale_by_days(ts: Optional[int], days: int) -> bool:
-    # FIX esistente: se days <= 0 allora NON skippiamo mai (sempre "stale" => rielabora)
+    # se days <= 0 allora NON skippiamo mai (sempre "stale" => rielabora)
     if days <= 0:
         return True
     if not ts:
@@ -474,7 +487,7 @@ def screen_coin(cid: str, sym_hint: str,
     try:
         coin = fetch_coin_full(cid, cg_rl, force_refresh=settings.refresh_cg)
         fr.name = coin.get("name") or cid
-    except Exception as e:
+    except Exception:
         with state_lock:
             state[cid] = {**st, "last_checked": now_ts(), "status": "cg_error"}
         return fr, None
@@ -548,7 +561,8 @@ def list_market_id_symbols(pages: int, per_page: int, cg_rl: RateLimiter) -> Lis
         for x in data:
             cid = x.get("id")
             sym = (x.get("symbol") or "").upper()
-            if cid: rows.append((cid, sym))
+            if cid:
+                rows.append((cid, sym))
     return rows
 
 def build_seed_from_perps(cg_rl: RateLimiter,
@@ -557,15 +571,33 @@ def build_seed_from_perps(cg_rl: RateLimiter,
     """Intersezione Binance∩Bybit (base symbol) -> mappatura a CG id via /coins/list?include_platform=true"""
     inter_syms = sorted(set(binance_bases.keys()) & set(bybit_bases.keys()))
 
+    # Prima prova: lista (cache-aware)
     cg_list = load_cg_coins_list_cached(cg_rl, force_refresh=settings.refresh_cg)
 
     mapped: List[Tuple[str, str]] = []
+    missing: List[str] = []
+
     for sym in inter_syms:
         picked = choose_best_cg_id_for_symbol(sym, cg_list)
         if picked is None:
+            missing.append(sym)
             continue
         cid, _name = picked
         mapped.append((cid, sym))
+
+    # Retry: se alcuni simboli non erano presenti nella lista in cache,
+    # forza refresh UNA VOLTA e riprova solo i missing.
+    if missing and (not settings.refresh_cg):
+        try:
+            cg_list_fresh = load_cg_coins_list_cached(cg_rl, force_refresh=True)
+            for sym in missing:
+                picked = choose_best_cg_id_for_symbol(sym, cg_list_fresh)
+                if picked is None:
+                    continue
+                cid, _name = picked
+                mapped.append((cid, sym))
+        except Exception:
+            pass
 
     return mapped  # [(cg_id, symbol)]
 
@@ -580,10 +612,7 @@ def format_eur_style_usd(amount: Any) -> str:
         return f"{amount}$"
 
 def build_top_only_output(results: List[CheckResult]) -> str:
-    """Crea SOLO la sezione:
-       — Tutti e 3 i parametri (TOP) —
-       SYMBOL · Name · LP: 1.234.567$ · Pool: 0x....
-    """
+    """Crea SOLO la sezione TOP."""
     all3 = [r for r in results if r.score() >= 2 and r.ok()]  # 2 OK: Bitget + Pancake (BSC)
     lines: List[str] = ["— Tutti e 3 i parametri (TOP) —", ""]
     for r in all3:
@@ -609,8 +638,10 @@ def parse_args() -> Settings:
     ap.add_argument("--dominance", type=float, default=0.60, help="Dominanza Bitget per short-circuit (0-1)")
     ap.add_argument("--max-tickers-scan", type=int, default=15)
 
-    ap.add_argument("--ttl-cg", type=int, default=12*3600)     # FIX default
-    ap.add_argument("--ttl-perps", type=int, default=6*3600)   # FIX default
+    ap.add_argument("--ttl-cg", type=int, default=12*3600)     # coin detail TTL
+    ap.add_argument("--ttl-cg-list", type=int, default=None,   # seed list TTL (default calcolato sotto)
+                    help="Override TTL cache CoinGecko coins/list (sec). Default: min(--ttl-cg, 2h).")
+    ap.add_argument("--ttl-perps", type=int, default=6*3600)
     ap.add_argument("--ttl-ds", type=int, default=24*3600)
 
     ap.add_argument("--skip-unchanged-days", type=int, default=3)
@@ -625,7 +656,6 @@ def parse_args() -> Settings:
     ap.add_argument("--seed-from", type=str, choices=["perps","cg"], default="perps",
                     help="Origine seed: 'perps' (intersezione Binance∩Bybit) o 'cg' (coins/markets)")
 
-    # FIX: refresh flags
     ap.add_argument("--refresh-perps", action="store_true", help="Ignora cache perps (Binance/Bybit) per questo run")
     ap.add_argument("--refresh-cg", action="store_true", help="Ignora cache CoinGecko (coins_list + coin detail) per questo run")
     ap.add_argument("--refresh-all", action="store_true", help="Equivalente a --refresh-perps --refresh-cg")
@@ -638,6 +668,10 @@ def parse_args() -> Settings:
     refresh_perps = bool(args.refresh_perps or args.refresh_all)
     refresh_cg = bool(args.refresh_cg or args.refresh_all)
 
+    ttl_cg_coin = int(args.ttl_cg)
+    # default list TTL: min(coin_ttl, 2h)
+    ttl_cg_list = int(args.ttl_cg_list) if args.ttl_cg_list is not None else min(ttl_cg_coin, 2 * 3600)
+
     s = Settings(
         pages=args.pages, per_page=args.per_page,
         ids=[x.strip() for x in args.ids.split(",")] if args.ids else None,
@@ -647,7 +681,8 @@ def parse_args() -> Settings:
 
         max_tickers_scan=args.max_tickers_scan, bitget_dominance=args.dominance,
 
-        ttl_cg_coin_sec=int(args.ttl_cg),
+        ttl_cg_coin_sec=ttl_cg_coin,
+        ttl_cg_list_sec=ttl_cg_list,
         ttl_perps_sec=int(args.ttl_perps),
         ttl_dexscreener_sec=int(args.ttl_ds),
 
@@ -677,7 +712,8 @@ def main():
     settings.quiet = True
     settings.verbose = False
 
-    ensure_dir(settings.cache_root); ensure_dir(settings.state_root)
+    ensure_dir(settings.cache_root)
+    ensure_dir(settings.state_root)
 
     # Rate limiters
     cg_rl = RateLimiter(settings.rps_cg)
@@ -712,15 +748,13 @@ def main():
         for fut in as_completed(futures):
             fr, res = fut.result()
             funnel_rows.append(fr)
-            if res: results.append(res)
+            if res:
+                results.append(res)
 
     save_state(state)
 
     out = build_top_only_output(results)
     print(out)
 
-
-
 if __name__ == "__main__":
     main()
-

@@ -43,10 +43,9 @@ jobs:
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
             pip install -r requirements.txt
-          else
-            # web3 serve a defiFunzionante.py
-            pip install requests tenacity rich web3
           fi
+          # Runtime deps necessari (defiFunzionante.py importa pandas)
+          pip install requests tenacity rich web3 pandas numpy
 
       - name: Run run_pipeline.py
         id: screener
@@ -63,8 +62,12 @@ jobs:
           OUTFILE=out.txt
           ERRFILE=err.txt
 
-          bash -lc "$CMD" >"$OUTFILE" 2>"$ERRFILE" || true
+          # Non mascherare l'exit code: catturalo davvero
+          set +e
+          bash -lc "$CMD" >"$OUTFILE" 2>"$ERRFILE"
           CODE=$?
+          set -e
+
           echo "exit_code=$CODE" >> "$GITHUB_OUTPUT"
 
           # Sanifica e prepara log sintetici
@@ -83,6 +86,12 @@ jobs:
               echo "$TAIL_ERR"
             fi
           } > msg.txt
+
+      - name: Print msg.txt (debug)
+        if: always()
+        run: |
+          echo "===== msg.txt ====="
+          cat msg.txt || true
 
       - name: Send Telegram — header
         if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
