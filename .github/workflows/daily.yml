@@ -33,6 +33,32 @@ jobs:
             exit 0
           fi
 
+      - name: Compute cache key (daily)
+        id: cachekey
+        run: |
+          echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
+
+      # Cache pip (opzionale ma consigliata)
+      - name: Restore pip cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-v1-${{ runner.os }}-py312-${{ hashFiles('requirements.txt') }}
+          restore-keys: |
+            pip-v1-${{ runner.os }}-py312-
+
+      # Cache app: .cache + state (questa è quella che ti “salva” da seeds=0 quando un endpoint fallisce)
+      - name: Restore app cache (.cache, state)
+        id: appcache-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            .cache
+            state
+          key: appcache-v1-${{ runner.os }}-${{ steps.cachekey.outputs.day }}
+          restore-keys: |
+            appcache-v1-${{ runner.os }}-
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
@@ -54,10 +80,23 @@ jobs:
           export LC_ALL=C.UTF-8
           export LANG=C.UTF-8
 
-          CMD="python run_pipeline.py --rpc https://bsc-dataseed.binance.org --min-liq 20000 --workers 12 --max-tickers-scan 40 --dominance 0.30 --rps-cg 0.5 --rps-ds 2.0 --funnel-show 100"
+          mkdir -p state/telegram
+          mkdir -p .cache
+
+          # Nota: --ttl-cg-list qui serve a far ricaricare più spesso la lista CoinGecko (coin nuove)
+          CMD="python run_pipeline.py \
+            --rpc https://bsc-dataseed.binance.org \
+            --min-liq 20000 \
+            --workers 12 \
+            --max-tickers-scan 40 \
+            --dominance 0.30 \
+            --rps-cg 0.5 \
+            --rps-ds 2.0 \
+            --funnel-show 100 \
+            --ttl-cg-list 1800"
+
           echo "Running: $CMD"
 
-          mkdir -p state/telegram
           OUTFILE=out.txt
           ERRFILE=err.txt
 
@@ -90,6 +129,16 @@ jobs:
           echo "===== msg.txt ====="
           cat msg.txt || true
 
+      # Salva cache app a fine job (1 cache al giorno, con fallback automatico al giorno precedente)
+      - name: Save app cache (.cache, state)
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            .cache
+            state
+          key: appcache-v1-${{ runner.os }}-${{ steps.cachekey.outputs.day }}
+
       - name: Send Telegram — header
         if: env.TG_BOT_TOKEN != '' && env.TG_CHAT_ID != ''
         shell: bash
@@ -97,7 +146,7 @@ jobs:
           API="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
           EXIT="${{ steps.screener.outputs.exit_code }}"
           if [ "$EXIT" = "0" ]; then
-            HEADER="✅ Manipulation Screener OK"
+            HEADER="✅ Screener OK"
           elif [ "$EXIT" = "2" ]; then
             HEADER="⚠️ Nessuna coin TOP trovata"
           else
@@ -159,3 +208,5 @@ jobs:
             err.txt
             msg.txt
             state/telegram/*.html
+            state/results.json
+            state/top_pairs.json

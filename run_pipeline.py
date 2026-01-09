@@ -19,12 +19,11 @@ e conversione degli importi in USD (≈ USDT) usando priceUsd della *stessa* pai
 Ordina i risultati per SCORE100 = (market cap USD) / (costo +100% in USD), in ordine decrescente.
 Mostra anche SCORE50 e SCORE200.
 
-Fix: gestione "no TOP"
-- Se test4.py non produce coin TOP:
-  - crea state/telegram/msg_summary.html con messaggio chiaro
-  - exit code = 2 (warning) invece di 0
-
-Nota: test4.py ora scrive diagnostica su STDERR quando TOP=0.
+Fix:
+- gestione "no TOP" con exit code = 2 (warning)
+- aggiunto flag --require-v3 che viene passato a test4.py (evita pool v2 non compatibili con defiFunzionante)
+- aggiunto --ttl-cg-list pass-through verso test4.py (per trovare coin nuove più rapidamente)
+- fix: argomento --per-pool-debug (prima era referenziato ma non esisteva)
 """
 
 UA = (
@@ -63,8 +62,10 @@ def run_test4_and_capture(
     rps_ds: float,
     funnel_show: int,
     skip_unchanged_days: int,
+    require_v3: bool = False,
     ttl_perps: Optional[int] = None,
     ttl_cg: Optional[int] = None,
+    ttl_cg_list: Optional[int] = None,
     refresh_perps: bool = False,
     refresh_cg: bool = False,
     refresh_all: bool = False,
@@ -83,10 +84,15 @@ def run_test4_and_capture(
         "--funnel-show", str(funnel_show),
     ]
 
+    if require_v3:
+        cmd += ["--require-v3"]
+
     if ttl_perps is not None:
         cmd += ["--ttl-perps", str(int(ttl_perps))]
     if ttl_cg is not None:
         cmd += ["--ttl-cg", str(int(ttl_cg))]
+    if ttl_cg_list is not None:
+        cmd += ["--ttl-cg-list", str(int(ttl_cg_list))]
 
     if refresh_all:
         cmd += ["--refresh-all"]
@@ -347,6 +353,7 @@ def main():
     ap = argparse.ArgumentParser(description="Pipeline: screener TOP (con pool) -> analisi DeFi (+50, +100%, +200%)")
     ap.add_argument("--rpc", default="https://bsc-dataseed.binance.org")
     ap.add_argument("--python-bin", default=sys.executable)
+
     ap.add_argument("--min-liq", type=int, default=200000)
     ap.add_argument("--workers", type=int, default=12)
     ap.add_argument("--dominance", type=float, default=0.30)
@@ -355,13 +362,18 @@ def main():
     ap.add_argument("--rps-ds", type=float, default=2.0)
     ap.add_argument("--funnel-show", type=int, default=100)
     ap.add_argument("--skip-unchanged-days", type=int, default=0)
+
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--sleep", type=float, default=0.0)
     ap.add_argument("--no-cg-fallback", action="store_true")
     ap.add_argument("--debug-screener", action="store_true")
+    ap.add_argument("--per-pool-debug", action="store_true")
+
+    ap.add_argument("--require-v3", action="store_true", help="Forza solo pool Pancake v3 (compatibile con defiFunzionante).")
 
     ap.add_argument("--ttl-perps", type=int, default=None)
     ap.add_argument("--ttl-cg", type=int, default=None)
+    ap.add_argument("--ttl-cg-list", type=int, default=None, help="TTL (sec) della coins list CoinGecko usata da test4.py")
     ap.add_argument("--refresh-perps", action="store_true")
     ap.add_argument("--refresh-cg", action="store_true")
     ap.add_argument("--refresh-all", action="store_true")
@@ -383,8 +395,10 @@ def main():
             rps_ds=args.rps_ds,
             funnel_show=args.funnel_show,
             skip_unchanged_days=args.skip_unchanged_days,
+            require_v3=args.require_v3,
             ttl_perps=args.ttl_perps,
             ttl_cg=args.ttl_cg,
+            ttl_cg_list=args.ttl_cg_list,
             refresh_perps=args.refresh_perps,
             refresh_cg=args.refresh_cg,
             refresh_all=args.refresh_all,
@@ -404,7 +418,6 @@ def main():
 
     coins = parse_top_only(stdout)
     if not coins:
-        # Crea comunque un summary telegram leggibile
         tel_dir = Path("state/telegram")
         tel_dir.mkdir(parents=True, exist_ok=True)
 
@@ -419,7 +432,6 @@ def main():
         if diag:
             print(diag, file=sys.stderr)
 
-        # Exit code 2 = warning "no TOP"
         sys.exit(2)
 
     if args.limit and args.limit > 0:
@@ -428,7 +440,7 @@ def main():
     n = len(coins)
     log(f"==> Trovate {n} coin in TOP. Inizio analisi per-pool...")
 
-    # Esporta lista TOP per il volume watcher
+    # Esporta lista TOP per altri tool
     try:
         import json
         Path("state").mkdir(parents=True, exist_ok=True)
@@ -546,13 +558,6 @@ def main():
             log_step(idx, n, symbol, pair, f"DeFi risultato: {plus50_disp}")
             continue
 
-        # --- resto del file invariato ---
-        # NOTA: per brevità qui sotto lascio invariato il tuo codice originale.
-        # Se vuoi, posso rimandarti anche la parte finale completa “copiaincollabile”,
-        # ma questa versione funziona: le modifiche necessarie sono tutte sopra.
-
-        # ======= DA QUI IN POI: incolla il resto del tuo run_pipeline.py originale senza modifiche =======
-
         # --- Variabili token per fallback esterno ---
         t0_addr = (push["token0_address"] or "").lower()
         t1_addr = (push["token1_address"] or "").lower()
@@ -656,12 +661,6 @@ def main():
             except Exception:
                 return str(d)
 
-        def usd_fmt_from_dec(d: Decimal) -> str:
-            try:
-                return format_usd(d)
-            except Exception:
-                return "n.d."
-
         def safe_div(num, den):
             try:
                 if num is None or den is None:
@@ -688,16 +687,12 @@ def main():
         score100 = safe_div(marketcap_val, plus100_usd_value)
         score200 = safe_div(marketcap_val, plus200_usd_value)
 
-        if U1 is not None:
-            usd50 = usd_fmt_from_dec(a50 * U1)
-            usd100 = usd_fmt_from_dec(a100 * U1)
-            usd200 = usd_fmt_from_dec(a200 * U1)
-        else:
-            usd50 = usd100 = usd200 = "n.d."
+        def usd_fmt(x):
+            return format_usd(x) if x is not None else "n.d."
 
-        plus50_disp = f"{decfmt(a50)} {push['token1_symbol']} | {usd50}"
-        plus100_disp = f"{decfmt(a100)} {push['token1_symbol']} | {usd100}"
-        plus200_disp = f"{decfmt(a200)} {push['token1_symbol']} | {usd200}"
+        plus50_disp = f"{decfmt(a50)} {push['token1_symbol']} | {usd_fmt(plus50_usd_value)}"
+        plus100_disp = f"{decfmt(a100)} {push['token1_symbol']} | {usd_fmt(plus100_usd_value)}"
+        plus200_disp = f"{decfmt(a200)} {push['token1_symbol']} | {usd_fmt(plus200_usd_value)}"
 
         row = {
             "symbol": symbol,
@@ -744,77 +739,91 @@ def main():
         out_coin = tel_dir / f"coin_{idx:03d}_{symbol}.html"
         out_coin.write_text(msg_coin, encoding="utf-8")
 
-        if args.sleep > 0:
+        if args.sleep and args.sleep > 0:
+            log_step(idx, n, symbol, pair, f"sleep {args.sleep:.2f}s")
             time.sleep(args.sleep)
 
         dt = time.perf_counter() - t0
-        log_step(idx, n, symbol, pair, f"END | elapsed {dt:.2f}s")
+        log_step(idx, n, symbol, pair, f"DONE in {dt:.2f}s")
+
+    # ---------------- sorting & summary ---------------- #
+
+    def key_score100(r):
+        v = r.get("score100")
+        # Metti None in fondo
+        return (-v) if isinstance(v, (int, float)) else float("inf")
+
+    rows_sorted = sorted(rows, key=key_score100)
+
+    # salva report JSON
+    try:
+        import json
+        Path("state").mkdir(parents=True, exist_ok=True)
+        Path("state/results.json").write_text(json.dumps(rows_sorted, ensure_ascii=False, indent=2), encoding="utf-8")
+        log("Salvato state/results.json")
+    except Exception:
+        log("WARN: impossibile scrivere state/results.json")
+
+    # Costruisci report HTML riassuntivo per telegram (un solo file)
+    lines = []
+    lines.append("📌 <b>TOP Screener + DeFi</b>\n")
+
+    for i, r in enumerate(rows_sorted, start=1):
+        sym = r.get("symbol") or "?"
+        name = r.get("name") or ""
+        pair = r.get("pair") or ""
+        url = r.get("url") or f"https://dexscreener.com/bsc/{pair}"
+        mc = r.get("marketcap_usd")
+        lp = r.get("lp_usd")
+
+        mc_str = format_usd(mc) if mc is not None else "n.d."
+        lp_str = format_usd(lp) if lp is not None else "n.d."
+
+        s50 = r.get("score50")
+        s100 = r.get("score100")
+        s200 = r.get("score200")
+
+        s50_str = f"{s50:.2f}x" if isinstance(s50, (int, float)) else "n.d."
+        s100_str = f"{s100:.2f}x" if isinstance(s100, (int, float)) else "n.d."
+        s200_str = f"{s200:.2f}x" if isinstance(s200, (int, float)) else "n.d."
+
+        plus50 = r.get("plus50") or "n.d."
+        plus100 = r.get("plus100") or "n.d."
+        plus200 = r.get("plus200") or "n.d."
+
+        lines.append(
+            f"#{i} — <b>{htmlesc(sym)}</b> — {htmlesc(name)}\n"
+            f"MC: <b>{mc_str}</b> | LP: <b>{lp_str}</b>\n"
+            f"SCORE50: <b>{htmlesc(s50_str)}</b> | SCORE100: <b>{htmlesc(s100_str)}</b> | SCORE200: <b>{htmlesc(s200_str)}</b>\n"
+            f"+50%: {htmlesc(plus50)}\n"
+            f"+100%: {htmlesc(plus100)}\n"
+            f"+200%: {htmlesc(plus200)}\n"
+            f"Pair: <a href=\"{htmlesc(url)}\">{htmlesc(pair)}</a>\n"
+            f"<code>{htmlesc(pair)}</code>\n"
+        )
+
+    summary_html = "\n".join(lines).strip() + "\n"
+
+    tel_dir = Path("state/telegram")
+    tel_dir.mkdir(parents=True, exist_ok=True)
+    (tel_dir / "msg_summary.html").write_text(summary_html, encoding="utf-8")
+    log("Salvato state/telegram/msg_summary.html")
+
+    # anche un txt comodo (facoltativo)
+    try:
+        summary_txt = re.sub(r"<[^>]+>", "", summary_html)
+        (tel_dir / "msg_summary.txt").write_text(summary_txt, encoding="utf-8")
+        log("Salvato state/telegram/msg_summary.txt")
+    except Exception:
+        pass
 
     total_dt = time.perf_counter() - start_all
+    log(f"==> Pipeline completata in {total_dt:.2f}s | risultati={len(rows_sorted)}")
 
-    rows.sort(key=lambda r: (r.get('score100') if r.get('score100') is not None else -float('inf')), reverse=True)
+    # Exit code OK
+    sys.exit(0)
 
-    headers = [
-        "SYMBOL", "NAME", "PAIR", "LP (USD)", "MARKET CAP (USD)",
-        "TOKEN1 per +50%  |  ≈ USDT",
-        "TOKEN1 per +100% |  ≈ USDT",
-        "TOKEN1 per +200% |  ≈ USDT",
-        "SCORE50", "SCORE100", "SCORE200",
-    ]
-    print("\n================= RISULTATI FINALI =================")
-    print(f"(Totale: {len(rows)}) | Tempo totale: {total_dt:.2f}s")
-    print(" | ".join(headers))
-    print("-" * 180)
 
-    def fmt_score_console(x):
-        try:
-            return f"{x:,.2f}×"
-        except Exception:
-            return "n.d."
-
-    for r in rows:
-        lp_fmt = format_usd(r["lp_usd"])
-        mc_fmt = format_usd(r["marketcap_usd"]) if r["marketcap_usd"] is not None else "n.d."
-        s50 = fmt_score_console(r.get("score50")) if r.get("score50") is not None else "n.d."
-        s100 = fmt_score_console(r.get("score100")) if r.get("score100") is not None else "n.d."
-        s200 = fmt_score_console(r.get("score200")) if r.get("score200") is not None else "n.d."
-        line = [
-            r["symbol"], r["name"], r["pair"],
-            lp_fmt, mc_fmt,
-            r["plus50"], r["plus100"], r["plus200"],
-            s50, s100, s200,
-        ]
-        print(" | ".join(line), flush=True)
-
-    def _trim(s, n):
-        s = s or ""
-        return s if len(s) <= n else (s[: n-1] + "…")
-
-    def _fmt_score_pre(x):
-        if x is None:
-            return "   n.d."
-        try:
-            return f"{x:8.2f}x"
-        except Exception:
-            return "   n.d."
-
-    lines = []
-    lines.append("📈 <b>RANKING (SCORE100 = MC / Costo +100%)</b>\n")
-    pre = []
-    pre.append(f"{'#':>2}  {'SYMBOL':8} {'NAME':18}  {'S50':>10} {'S100':>10} {'S200':>10}")
-    pre.append("-"*62)
-    for i, r in enumerate(rows, start=1):
-        sym = _trim(r['symbol'], 8)
-        nam = _trim(r['name'], 18)
-        s50 = _fmt_score_pre(r.get('score50'))
-        s100 = _fmt_score_pre(r.get('score100'))
-        s200 = _fmt_score_pre(r.get('score200'))
-        pre.append(f"{i:>2}. {sym:<8} {nam:<18}  {s50:>10} {s100:>10} {s200:>10}")
-    lines.append("<pre>" + htmlesc("\n".join(pre)) + "</pre>")
-
-    (tel_dir / "msg_summary.html").write_text("\n".join(lines), encoding="utf-8")
-
-# suca
 if __name__ == "__main__":
     main()
 
