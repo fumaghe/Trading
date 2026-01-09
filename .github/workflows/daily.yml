@@ -14,7 +14,7 @@ jobs:
     env:
       PYTHONIOENCODING: "utf-8"
       TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
-      TG_CHAT_ID:   ${{ secrets.TG_CHAT_ID }}
+      TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
 
     steps:
       - name: Checkout
@@ -25,6 +25,7 @@ jobs:
 
       - name: Run only at 09:30 and 17:30 Europe/Rome
         if: ${{ github.event_name == 'schedule' }}
+        shell: bash
         run: |
           NOW=$(TZ=Europe/Rome date +'%H:%M')
           echo "Europe/Rome now: $NOW"
@@ -35,11 +36,12 @@ jobs:
 
       - name: Compute cache key (daily)
         id: cachekey
+        shell: bash
         run: |
           echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
 
-      # Cache pip (opzionale ma consigliata)
-      - name: Restore pip cache
+      # Cache pip (restore+save automatico in un'unica action)
+      - name: Cache pip
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
@@ -47,7 +49,7 @@ jobs:
           restore-keys: |
             pip-v1-${{ runner.os }}-py312-
 
-      # Cache app: .cache + state (questa è quella che ti “salva” da seeds=0 quando un endpoint fallisce)
+      # Cache app (restore) - .cache + state
       - name: Restore app cache (.cache, state)
         id: appcache-restore
         uses: actions/cache/restore@v4
@@ -65,6 +67,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install deps
+        shell: bash
         run: |
           python -m pip install --upgrade pip
           if [ -f requirements.txt ]; then
@@ -83,7 +86,10 @@ jobs:
           mkdir -p state/telegram
           mkdir -p .cache
 
-          # Nota: --ttl-cg-list qui serve a far ricaricare più spesso la lista CoinGecko (coin nuove)
+          OUTFILE=out.txt
+          ERRFILE=err.txt
+
+          # --ttl-cg-list: più basso = trova coin nuove prima (più chiamate CoinGecko)
           CMD="python run_pipeline.py \
             --rpc https://bsc-dataseed.binance.org \
             --min-liq 20000 \
@@ -97,9 +103,6 @@ jobs:
 
           echo "Running: $CMD"
 
-          OUTFILE=out.txt
-          ERRFILE=err.txt
-
           set +e
           bash -lc "$CMD" >"$OUTFILE" 2>"$ERRFILE"
           CODE=$?
@@ -112,24 +115,51 @@ jobs:
           tr -d '\000' < "$OUTFILE" > "$SAN_OUT" || true
           tr -d '\000' < "$ERRFILE" > "$SAN_ERR" || true
 
-          TAIL_ERR="$(tail -n 50 "$SAN_ERR" 2>/dev/null || true)"
+          TAIL_ERR="$(tail -n 80 "$SAN_ERR" 2>/dev/null || true)"
           {
             echo "==== run_pipeline output (truncated) ===="
-            head -n 200 "$SAN_OUT" || true
+            head -n 250 "$SAN_OUT" || true
             if [ -s "$SAN_ERR" ]; then
               echo ""
-              echo "---- last 50 lines of STDERR ----"
+              echo "---- last 80 lines of STDERR ----"
               echo "$TAIL_ERR"
             fi
           } > msg.txt
 
-      - name: Print msg.txt (debug)
+      - name: Debug logs (always)
         if: always()
+        shell: bash
         run: |
+          echo "===== exit_code ====="
+          echo "${{ steps.screener.outputs.exit_code }}"
+          echo ""
           echo "===== msg.txt ====="
           cat msg.txt || true
+          echo ""
+          echo "===== err.txt (tail 200) ====="
+          tail -n 200 err.txt || true
+          echo ""
+          echo "===== out.txt (head 200) ====="
+          head -n 200 out.txt || true
 
-      # Salva cache app a fine job (1 cache al giorno, con fallback automatico al giorno precedente)
+      # Fallback: se run_pipeline crasha e NON crea msg_summary.html,
+      # lo generiamo noi con l'errore (così Telegram non dirà più “nessun riepilogo”).
+      - name: Ensure Telegram summary exists (fallback on crash)
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p state/telegram
+          if [ ! -f state/telegram/msg_summary.html ]; then
+            python -c "import html, pathlib; \
+            p=pathlib.Path; \
+            msg=p('msg.txt').read_text(encoding='utf-8', errors='ignore') if p('msg.txt').exists() else ''; \
+            err=p('err.txt').read_text(encoding='utf-8', errors='ignore') if p('err.txt').exists() else ''; \
+            out=p('out.txt').read_text(encoding='utf-8', errors='ignore') if p('out.txt').exists() else ''; \
+            tail=(err.strip() or msg.strip() or out.strip())[-3500:]; \
+            p('state/telegram/msg_summary.html').write_text('❌ run_pipeline failed (no summary generated)\\n\\n<pre>'+html.escape(tail)+'</pre>', encoding='utf-8')"
+                      fi
+
+      # Cache app (save) - salva SEMPRE a fine job con key giornaliera
       - name: Save app cache (.cache, state)
         if: always()
         uses: actions/cache/save@v4
@@ -207,8 +237,8 @@ jobs:
             out.txt
             err.txt
             msg.txt
+            out.sanitized.txt
+            err.sanitized.txt
             state/telegram/*.html
             state/results.json
             state/top_pairs.json
-
-            
