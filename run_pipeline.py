@@ -19,11 +19,15 @@ e conversione degli importi in USD (≈ USDT) usando priceUsd della *stessa* pai
 Ordina i risultati per SCORE100 = (market cap USD) / (costo +100% in USD), in ordine decrescente.
 Mostra anche SCORE50 e SCORE200.
 
-Fix:
-- gestione "no TOP" con exit code = 2 (warning)
-- aggiunto flag --require-v3 che viene passato a test4.py (evita pool v2 non compatibili con defiFunzionante)
-- aggiunto --ttl-cg-list pass-through verso test4.py (per trovare coin nuove più rapidamente)
-- fix: argomento --per-pool-debug (prima era referenziato ma non esisteva)
+Fix principali (rispetto alle versioni che ti stanno dando problemi):
+- run_test4_and_capture NON usa check=True: gestiamo returncode
+- se test4.py fallisce (rc != 0 e rc != 2) -> exit(1) con diagnostica
+- se non ci sono coin TOP -> exit(2) e genera msg_summary.html con diag
+- CoinGecko coins list cache (fallback mcap) usa TTL configurabile (args.ttl_cg_list) invece di 48h fisse
+- path cache CoinGecko più pulita: .cache/coingecko/coins_list_include_platform.json
+- mantiene --ttl-cg-list pass-through verso test4.py
+- mantiene --require-v3 pass-through verso test4.py
+- mantiene --per-pool-debug
 """
 
 UA = (
@@ -36,19 +40,26 @@ HEADERS = {"Accept": "application/json", "User-Agent": UA}
 DEX_PAIRS_URL = "https://api.dexscreener.com/latest/dex/pairs/bsc/{pair}"
 DEX_TOKEN_URL = "https://api.dexscreener.com/latest/dex/tokens/{address}"
 CG_LIST_URL = "https://api.coingecko.com/api/v3/coins/list?include_platform=true"
-CG_COIN_URL = "https://api.coingecko.com/api/v3/coins/{id}?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=false"
+CG_COIN_URL = (
+    "https://api.coingecko.com/api/v3/coins/{id}"
+    "?localization=false&tickers=false&market_data=true&community_data=false&developer_data=false&sparkline=false"
+)
 
 TOP_HEADER = "— Tutti e 3 i parametri (TOP) —"
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
+
 def log(msg: str):
     print(msg, flush=True)
+
 
 def log_step(i: int, n: int, symbol: str, pair: str, msg: str):
     print(f"[{i}/{n}] {symbol} ({pair}) | {msg}", flush=True)
 
+
 def log_err(i: int, n: int, symbol: str, pair: str, msg: str):
     print(f"[{i}/{n}] {symbol} ({pair}) | ERROR: {msg}", file=sys.stderr, flush=True)
+
 
 # ---------------- screener ---------------- #
 
@@ -69,7 +80,7 @@ def run_test4_and_capture(
     refresh_perps: bool = False,
     refresh_cg: bool = False,
     refresh_all: bool = False,
-) -> Tuple[str, str]:
+) -> Tuple[str, str, int]:
     cmd = [
         python_bin,
         "test4.py",
@@ -102,10 +113,11 @@ def run_test4_and_capture(
         if refresh_cg:
             cmd += ["--refresh-cg"]
 
-    res = subprocess.run(cmd, capture_output=True, text=True, check=True)
+    res = subprocess.run(cmd, capture_output=True, text=True)  # NO check=True
     stdout = ANSI_RE.sub("", res.stdout or "")
     stderr = ANSI_RE.sub("", res.stderr or "")
-    return stdout, stderr
+    return stdout, stderr, int(res.returncode)
+
 
 def parse_top_only(stdout: str):
     entries = []
@@ -139,6 +151,7 @@ def parse_top_only(stdout: str):
             entries.append({"symbol": symbol, "name": name, "pair": pair, "lp_usd": lp_usd})
     return entries
 
+
 # ---------------- marketcap & pair info helpers ---------------- #
 
 def fetch_ds_pair_info(pair: str):
@@ -171,6 +184,7 @@ def fetch_ds_pair_info(pair: str):
             "baseToken": {}, "quoteToken": {}, "url": None
         }
 
+
 def fetch_ds_token_price_usd_for_pair(token_addr: str, pair_addr: str):
     try:
         url = DEX_TOKEN_URL.format(address=token_addr)
@@ -184,6 +198,7 @@ def fetch_ds_token_price_usd_for_pair(token_addr: str, pair_addr: str):
     except Exception:
         pass
     return None
+
 
 def fetch_bnb_usd_from_ds(prefer_chain: str = "bsc") -> Optional[float]:
     try:
@@ -224,14 +239,18 @@ def fetch_bnb_usd_from_ds(prefer_chain: str = "bsc") -> Optional[float]:
     except Exception:
         return None
 
-def load_cg_list_cached(cache_path: Path, force_refresh: bool = False):
+
+def load_cg_list_cached(cache_path: Path, ttl_sec: int, force_refresh: bool = False):
     cache_path.parent.mkdir(parents=True, exist_ok=True)
-    if (not force_refresh) and cache_path.exists() and (time.time() - cache_path.stat().st_mtime) < 48 * 3600:
+
+    ttl_sec = int(ttl_sec) if ttl_sec is not None else 48 * 3600
+    if (not force_refresh) and cache_path.exists() and (time.time() - cache_path.stat().st_mtime) < ttl_sec:
         try:
             import json
             return json.loads(cache_path.read_text(encoding="utf-8"))
         except Exception:
             pass
+
     r = requests.get(CG_LIST_URL, headers=HEADERS, timeout=HTTP_TIMEOUT)
     r.raise_for_status()
     data = r.json()
@@ -241,6 +260,7 @@ def load_cg_list_cached(cache_path: Path, force_refresh: bool = False):
     except Exception:
         pass
     return data
+
 
 def choose_best_cg_id(symbol: str, name: str, cg_list: list):
     sym_up = symbol.upper()
@@ -252,8 +272,10 @@ def choose_best_cg_id(symbol: str, name: str, cg_list: list):
         platforms = row.get("platforms") or {}
         has_bsc = any(k.lower() in ("binance-smart-chain", "bsc", "bnb-smart-chain", "bnb") for k in platforms.keys())
         cands.append((row.get("id"), (row.get("name") or "").strip(), has_bsc))
+
     if not cands:
         return None
+
     pool = [c for c in cands if c[2]] or cands
     name_low = (name or "").lower().strip()
     exact = [c for c in pool if c[1].lower() == name_low]
@@ -263,6 +285,7 @@ def choose_best_cg_id(symbol: str, name: str, cg_list: list):
     if starts:
         return starts[0][0]
     return pool[0][0]
+
 
 def fetch_cg_marketcap_usd(coin_id: str):
     try:
@@ -276,11 +299,13 @@ def fetch_cg_marketcap_usd(coin_id: str):
     except Exception:
         return None
 
+
 def format_usd(x):
     try:
         return f"{int(round(float(x))):,}$".replace(",", ".")
     except Exception:
         return "n.d."
+
 
 # ---------------- Web3 helper (retry & reuse) ---------------- #
 
@@ -297,6 +322,7 @@ def make_web3_with_retry(defi_module, rpc_url: str, attempts: int = 3, base_slee
             last_err = e
         time.sleep(base_sleep * (i + 1))
     raise RuntimeError(f"Connessione RPC fallita dopo {attempts} tentativi: {last_err}")
+
 
 # ---------------- defi compute ---------------- #
 
@@ -347,6 +373,7 @@ def compute_push_amounts_with_defi(pool: str, rpc_url: str, w3=None):
         "plus200_str": rows[2]["token1_needed"],
     }
 
+
 # ---------------- main ---------------- #
 
 def main():
@@ -373,41 +400,34 @@ def main():
 
     ap.add_argument("--ttl-perps", type=int, default=None)
     ap.add_argument("--ttl-cg", type=int, default=None)
-    ap.add_argument("--ttl-cg-list", type=int, default=None, help="TTL (sec) della coins list CoinGecko usata da test4.py")
+    ap.add_argument("--ttl-cg-list", type=int, default=None, help="TTL (sec) della coins list CoinGecko usata da test4.py e dal fallback marketcap in questo script.")
     ap.add_argument("--refresh-perps", action="store_true")
     ap.add_argument("--refresh-cg", action="store_true")
     ap.add_argument("--refresh-all", action="store_true")
 
     args = ap.parse_args()
-
     start_all = time.perf_counter()
 
     # 1) Screener
     log("==> Avvio screener (test4.py)...")
-    try:
-        stdout, stderr = run_test4_and_capture(
-            python_bin=args.python_bin,
-            min_liq=args.min_liq,
-            workers=args.workers,
-            dominance=args.dominance,
-            max_tickers_scan=args.max_tickers_scan,
-            rps_cg=args.rps_cg,
-            rps_ds=args.rps_ds,
-            funnel_show=args.funnel_show,
-            skip_unchanged_days=args.skip_unchanged_days,
-            require_v3=args.require_v3,
-            ttl_perps=args.ttl_perps,
-            ttl_cg=args.ttl_cg,
-            ttl_cg_list=args.ttl_cg_list,
-            refresh_perps=args.refresh_perps,
-            refresh_cg=args.refresh_cg,
-            refresh_all=args.refresh_all,
-        )
-    except subprocess.CalledProcessError as e:
-        log_err(0, 0, "-", "-", "Lancio test4.py fallito")
-        print(e.stdout or "")
-        print(e.stderr or "", file=sys.stderr)
-        sys.exit(1)
+    stdout, stderr, rc = run_test4_and_capture(
+        python_bin=args.python_bin,
+        min_liq=args.min_liq,
+        workers=args.workers,
+        dominance=args.dominance,
+        max_tickers_scan=args.max_tickers_scan,
+        rps_cg=args.rps_cg,
+        rps_ds=args.rps_ds,
+        funnel_show=args.funnel_show,
+        skip_unchanged_days=args.skip_unchanged_days,
+        require_v3=args.require_v3,
+        ttl_perps=args.ttl_perps,
+        ttl_cg=args.ttl_cg,
+        ttl_cg_list=args.ttl_cg_list,
+        refresh_perps=args.refresh_perps,
+        refresh_cg=args.refresh_cg,
+        refresh_all=args.refresh_all,
+    )
 
     if args.debug_screener:
         print(">> ===== Screener stdout (debug) =====")
@@ -415,6 +435,26 @@ def main():
         print(">> ===== Screener stderr (debug) =====", file=sys.stderr)
         print(stderr, file=sys.stderr)
         print(">> ===================================")
+
+    # Se test4 fallisce davvero, errore hard
+    if rc not in (0, 2):
+        log_err(0, 0, "-", "-", f"Lancio test4.py fallito (exit={rc})")
+        if stdout:
+            print(stdout)
+        if stderr:
+            print(stderr, file=sys.stderr)
+        sys.exit(1)
+
+    # Se test4 esce con 2 (eventuale warning), gestisci come "no TOP"
+    if rc == 2:
+        tel_dir = Path("state/telegram")
+        tel_dir.mkdir(parents=True, exist_ok=True)
+        diag = (stderr or "").strip()
+        msg = "⚠️ Nessuna coin TOP trovata (test4.py exit=2)."
+        if diag:
+            msg += "\n\n<pre>" + htmlesc(diag[-3500:]) + "</pre>"
+        (tel_dir / "msg_summary.html").write_text(msg, encoding="utf-8")
+        sys.exit(2)
 
     coins = parse_top_only(stdout)
     if not coins:
@@ -451,7 +491,8 @@ def main():
         log("WARN: impossibile scrivere state/top_pairs.json")
 
     cg_list = None
-    cg_cache = Path(".cache") / "cg_coins_list_include_platform.json"
+    cg_cache = Path(".cache") / "coingecko" / "coins_list_include_platform.json"
+    ttl_list = int(args.ttl_cg_list) if args.ttl_cg_list is not None else 6 * 3600
 
     # Connessione web3 condivisa
     import importlib.util
@@ -459,6 +500,7 @@ def main():
     spec = importlib.util.spec_from_file_location("defiFunzionante", str(mod_path))
     defi_mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(defi_mod)  # type: ignore
+
     try:
         w3_shared = make_web3_with_retry(defi_mod, args.rpc, attempts=3, base_sleep=2.0)
     except Exception as e:
@@ -504,6 +546,7 @@ def main():
                     log_step(idx, n, symbol, pair, "CoinGecko: download/uso cache coin list...")
                     cg_list = load_cg_list_cached(
                         cg_cache,
+                        ttl_sec=ttl_list,
                         force_refresh=bool(args.refresh_cg or args.refresh_all),
                     )
                 coin_id = choose_best_cg_id(symbol, name, cg_list or [])
@@ -511,7 +554,10 @@ def main():
                     cg_t0 = time.perf_counter()
                     marketcap_usd = fetch_cg_marketcap_usd(coin_id)
                     cg_dt = time.perf_counter() - cg_t0
-                    log_step(idx, n, symbol, pair, f"CoinGecko OK in {cg_dt:.2f}s | id={coin_id} | mcap={format_usd(marketcap_usd) if marketcap_usd else 'n.d.'}")
+                    log_step(
+                        idx, n, symbol, pair,
+                        f"CoinGecko OK in {cg_dt:.2f}s | id={coin_id} | mcap={format_usd(marketcap_usd) if marketcap_usd else 'n.d.'}"
+                    )
                 else:
                     log_step(idx, n, symbol, pair, "CoinGecko: nessun id coerente trovato.")
             except Exception as e:
@@ -528,7 +574,10 @@ def main():
             plus100_str = push["plus100_str"]
             plus200_str = push["plus200_str"]
 
-            log_step(idx, n, symbol, pair, f"DeFi OK in {ddt:.2f}s | token1={push['token1_symbol']} | +50={plus50_str} | +100={plus100_str} | +200={plus200_str}")
+            log_step(
+                idx, n, symbol, pair,
+                f"DeFi OK in {ddt:.2f}s | token1={push['token1_symbol']} | +50={plus50_str} | +100={plus100_str} | +200={plus200_str}"
+            )
         except Exception as e:
             msg = str(e)
             if args.per_pool_debug:
@@ -561,22 +610,22 @@ def main():
         # --- Variabili token per fallback esterno ---
         t0_addr = (push["token0_address"] or "").lower()
         t1_addr = (push["token1_address"] or "").lower()
-        t0_sym  = (push["token0_symbol"] or "").upper().strip()
-        t1_sym  = (push["token1_symbol"] or "").upper().strip()
+        t0_sym = (push["token0_symbol"] or "").upper().strip()
+        t1_sym = (push["token1_symbol"] or "").upper().strip()
 
         # 4) Conversione ≈ USDT (U1 = USD/token1)
         U1 = None
 
         STABLE_SYMS = {"USDT", "USDC", "BUSD", "FDUSD", "DAI", "USDD", "USDP", "TUSD", "USD1"}
         STABLE_ADDRS_BSC = {
-            "0x55d398326f99059ff775485246999027b3197955",
-            "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",
-            "0xe9e7cea3dedca5984780bafc599bd69add087d56",
-            "0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3",
-            "0xd17479997f34dd9156deef8f95a52d81d265be9c",
-            "0x1456688345527be1f37e9e627da0837d6f08c925",
-            "0x14016e85a25aeb13065688cafb43044c2ef86784",
-            "0xbd0a4bf098261673d5e6e600fd87ddcd756efb62",
+            "0x55d398326f99059ff775485246999027b3197955",  # USDT
+            "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",  # USDC
+            "0xe9e7cea3dedca5984780bafc599bd69add087d56",  # BUSD
+            "0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3",  # DAI
+            "0xd17479997f34dd9156deef8f95a52d81d265be9c",  # USDD
+            "0x1456688345527be1f37e9e627da0837d6f08c925",  # USDP
+            "0x14016e85a25aeb13065688cafb43044c2ef86784",  # TUSD
+            "0xbd0a4bf098261673d5e6e600fd87ddcd756efb62",  # FDUSD (nota: può cambiare, ma ok come euristica)
         }
 
         NATIVE_WRAPPED_SYMS_BSC = {"WBNB"}
@@ -587,20 +636,20 @@ def main():
             priceUsd = ds.get("priceUsd")
             priceNative = ds.get("priceNative")
 
-            base_info  = ds.get("baseToken")  or {}
+            base_info = ds.get("baseToken") or {}
             quote_info = ds.get("quoteToken") or {}
 
-            base_addr  = (base_info.get("address") or "").lower()
+            base_addr = (base_info.get("address") or "").lower()
             quote_addr = (quote_info.get("address") or "").lower()
-            base_sym   = (base_info.get("symbol")  or "").upper().strip()
-            quote_sym  = (quote_info.get("symbol") or "").upper().strip()
+            base_sym = (base_info.get("symbol") or "").upper().strip()
+            quote_sym = (quote_info.get("symbol") or "").upper().strip()
 
             if (t1_sym in STABLE_SYMS) or (t1_addr in STABLE_ADDRS_BSC):
                 U1 = Decimal("1")
 
             if U1 is None and priceUsd is not None:
-                base_is_t0  = bool(base_addr)  and (base_addr  == t0_addr)
-                base_is_t1  = bool(base_addr)  and (base_addr  == t1_addr)
+                base_is_t0 = bool(base_addr) and (base_addr == t0_addr)
+                base_is_t1 = bool(base_addr) and (base_addr == t1_addr)
                 quote_is_t0 = bool(quote_addr) and (quote_addr == t0_addr)
                 quote_is_t1 = bool(quote_addr) and (quote_addr == t1_addr)
 
@@ -618,8 +667,8 @@ def main():
                     U1 = Decimal(str(priceUsd)) / denom
 
             if U1 is None and priceUsd is not None:
-                base_is_t0_sym  = base_sym  and (base_sym  == t0_sym)
-                base_is_t1_sym  = base_sym  and (base_sym  == t1_sym)
+                base_is_t0_sym = base_sym and (base_sym == t0_sym)
+                base_is_t1_sym = base_sym and (base_sym == t1_sym)
                 quote_is_t0_sym = quote_sym and (quote_sym == t0_sym)
                 quote_is_t1_sym = quote_sym and (quote_sym == t1_sym)
 
@@ -656,7 +705,7 @@ def main():
 
         def decfmt(d: Decimal, decimals: int = 6) -> str:
             try:
-                q = Decimal("1." + "0"*decimals)
+                q = Decimal("1." + "0" * decimals)
                 return str(d.quantize(q).normalize())
             except Exception:
                 return str(d)
@@ -683,7 +732,7 @@ def main():
             plus50_usd_value = plus100_usd_value = plus200_usd_value = None
 
         marketcap_val = marketcap_usd if marketcap_usd is not None else None
-        score50  = safe_div(marketcap_val, plus50_usd_value)
+        score50 = safe_div(marketcap_val, plus50_usd_value)
         score100 = safe_div(marketcap_val, plus100_usd_value)
         score200 = safe_div(marketcap_val, plus200_usd_value)
 
@@ -719,9 +768,9 @@ def main():
         price_str = f"{row['priceUsd']:.8f} USD / {base_sym2}" if row["priceUsd"] is not None else "n.d."
         mc_str = format_usd(row["marketcap_usd"]) if row["marketcap_usd"] is not None else "n.d."
         lp_str = format_usd(row["lp_usd"])
-        s50 = f"{row['score50']:.2f}x" if row.get("score50") is not None else "n.d."
-        s100 = f"{row['score100']:.2f}x" if row.get("score100") is not None else "n.d."
-        s200 = f"{row['score200']:.2f}x" if row.get("score200") is not None else "n.d."
+        s50_disp = f"{row['score50']:.2f}x" if row.get("score50") is not None else "n.d."
+        s100_disp = f"{row['score100']:.2f}x" if row.get("score100") is not None else "n.d."
+        s200_disp = f"{row['score200']:.2f}x" if row.get("score200") is not None else "n.d."
 
         msg_coin = (
             f"💠 <b>{htmlesc(symbol)}</b> — {htmlesc(name)}\n"
@@ -734,7 +783,7 @@ def main():
             f"+50%: {htmlesc(plus50_disp)}\n"
             f"+100%: {htmlesc(plus100_disp)}\n"
             f"+200%: {htmlesc(plus200_disp)}\n\n"
-            f"SCORE50: <b>{s50}</b> | SCORE100: <b>{s100}</b> | SCORE200: <b>{s200}</b>"
+            f"SCORE50: <b>{s50_disp}</b> | SCORE100: <b>{s100_disp}</b> | SCORE200: <b>{s200_disp}</b>"
         )
         out_coin = tel_dir / f"coin_{idx:03d}_{symbol}.html"
         out_coin.write_text(msg_coin, encoding="utf-8")
@@ -750,7 +799,6 @@ def main():
 
     def key_score100(r):
         v = r.get("score100")
-        # Metti None in fondo
         return (-v) if isinstance(v, (int, float)) else float("inf")
 
     rows_sorted = sorted(rows, key=key_score100)
@@ -759,7 +807,10 @@ def main():
     try:
         import json
         Path("state").mkdir(parents=True, exist_ok=True)
-        Path("state/results.json").write_text(json.dumps(rows_sorted, ensure_ascii=False, indent=2), encoding="utf-8")
+        Path("state/results.json").write_text(
+            json.dumps(rows_sorted, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         log("Salvato state/results.json")
     except Exception:
         log("WARN: impossibile scrivere state/results.json")
@@ -820,11 +871,8 @@ def main():
     total_dt = time.perf_counter() - start_all
     log(f"==> Pipeline completata in {total_dt:.2f}s | risultati={len(rows_sorted)}")
 
-    # Exit code OK
     sys.exit(0)
 
 
 if __name__ == "__main__":
     main()
-
-

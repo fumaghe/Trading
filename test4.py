@@ -3,22 +3,22 @@
 """
 Crypto Screener (v2.3.5) — Output TOP-only con Pool address
 
-Fix principali:
-- Seed robustness:
-  - Normalizzazione simboli per futures multiplier (es. 1000PEPE -> PEPE)
-  - Seed costruito su unione Binance∪Bybit + filtro has_perps_on_both()
-  - Mapping CoinGecko su symbol normalizzato
-- Fix cache freshness:
-  - TTL separato per CoinGecko coins list (seed mapping) vs coin detail
-  - Retry: se alcuni symbol non mappano, refresh list UNA volta e riprova
-- Diagnostica forte:
-  - Se TOP=0 stampa su STDERR: sizes perps, counts seed/mapped, e (se fallisce fetch perps senza cache) l’errore reale.
-- Persistenza state (finalmente):
-  - state/test4_state.json
+Fix critico:
+- rimosso argomento argparse non valido: default_toggle (causava crash immediato)
 
-Nota:
-- stdout: SOLO sezione TOP (per parsing in run_pipeline)
-- stderr: diagnostica
+Robustezza seed:
+- Normalizzazione simboli per futures multiplier (es. 1000PEPE -> PEPE)
+- Seed costruito su unione Binance∪Bybit + filtro has_perps_on_both()
+- Mapping CoinGecko su symbol normalizzato
+- TTL separato per CoinGecko coins list vs coin detail
+- Retry refresh list UNA volta se mapping mancante
+- Fallback: se seed=0, prova refresh perps+cg_list una volta
+
+State:
+- Salva state su state/state.json (così con cache GitHub Actions resta persistente)
+
+Diagnostica:
+- Se nessuna coin TOP, stampa su STDERR un riepilogo dei blocchi per stage
 """
 
 from __future__ import annotations
@@ -48,26 +48,11 @@ except Exception:  # pragma: no cover
     def wait_exponential(**kwargs): return None
     def retry_if_exception_type(*args, **kwargs): return None
 
-try:
-    from rich.console import Console
-    RICH = True
-    console = Console()
-except Exception:
-    RICH = False
-    console = None
-
 # --------------------------- Endpoints --------------------------- #
 
 COINGECKO = "https://api.coingecko.com/api/v3"
 DEXSCREENER_TOKEN = "https://api.dexscreener.com/latest/dex/tokens/{address}"
-
-# Binance: spesso i runner GitHub hanno problemi con fapi.binance.com → aggiungo fallback
-BINANCE_FUTURES_INFO_CANDIDATES = [
-    "https://fapi.binance.com/fapi/v1/exchangeInfo",
-    "https://data-api.binance.vision/fapi/v1/exchangeInfo",
-    "https://www.binance.com/fapi/v1/exchangeInfo",
-]
-
+BINANCE_FUTURES_INFO = "https://fapi.binance.com/fapi/v1/exchangeInfo"
 BYBIT_LINEAR = "https://api.bybit.com/v5/market/instruments-info"
 
 # --------------------------- Defaults --------------------------- #
@@ -85,7 +70,7 @@ DEFAULT_HEADERS = {
 # --------------------------- Rate limiter --------------------------- #
 
 class RateLimiter:
-    """Semplice rate limiter per-sorgente con piccolo jitter per ridurre burst/429."""
+    """Semplice rate limiter per-sorgente con jitter per ridurre burst/429."""
     def __init__(self, rps: float):
         self.min_interval = 1.0 / max(0.0001, rps)
         self.lock = threading.Lock()
@@ -111,7 +96,7 @@ class Settings:
 
     # Stage thresholds
     min_pair_liquidity_usd: float = 150_000.0
-    require_v3: bool = False
+    require_v3: bool = False  # opzionale: solo Pancake v3
 
     # Heuristica Bitget
     max_tickers_scan: int = 15
@@ -135,8 +120,8 @@ class Settings:
     quiet: bool = False
 
     # Rate limits (rps)
-    rps_cg: float = 1.0
-    rps_ds: float = 2.0
+    rps_cg: float = 1.0      # CoinGecko
+    rps_ds: float = 2.0      # DexScreener
 
     # Funnel printing
     funnel_show: int = 30
@@ -148,7 +133,10 @@ class Settings:
     refresh_perps: bool = False
     refresh_cg: bool = False
 
-# --------------------------- Utilities & logging --------------------------- #
+
+settings: Settings  # inizializzata in main()
+
+# --------------------------- Utilities --------------------------- #
 
 def now_ts() -> int:
     return int(time.time())
@@ -169,12 +157,10 @@ def read_json(path: str) -> Optional[dict]:
     except Exception:
         return None
 
-def write_json_atomic(path: str, data: dict):
+def write_json(path: str, data: dict):
     ensure_dir(os.path.dirname(path))
-    tmp = f"{path}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f)
-    os.replace(tmp, path)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False)
 
 def cache_get(path: str, ttl_sec: int) -> Optional[dict]:
     if ttl_sec <= 0:
@@ -207,9 +193,11 @@ class Http:
     sess.headers.update(DEFAULT_HEADERS)
 
     @staticmethod
-    @retry(stop=stop_after_attempt(4),
-           wait=wait_exponential(multiplier=1, min=1, max=8),
-           retry=retry_if_exception_type((requests.RequestException,)))
+    @retry(
+        stop=stop_after_attempt(4),
+        wait=wait_exponential(multiplier=1, min=1, max=8),
+        retry=retry_if_exception_type((requests.RequestException,))
+    )
     def get(url: str, **kwargs) -> requests.Response:
         headers = kwargs.pop("headers", {})
         all_headers = {**DEFAULT_HEADERS, **headers}
@@ -218,9 +206,9 @@ class Http:
             wait_s = int(r.headers.get("Retry-After", "5"))
             time.sleep(max(wait_s, 5))
             raise requests.RequestException(f"{r.status_code} Too Many Requests")
-        if r.status_code in (403, 401, 451):
-            time.sleep(3)
-            raise requests.RequestException(f"{r.status_code} Forbidden/Unauthorized/Unavailable")
+        if r.status_code in (403, 401):
+            time.sleep(5)
+            raise requests.RequestException(f"{r.status_code} Forbidden/Unauthorized")
         if r.status_code >= 400:
             raise requests.RequestException(f"GET {url} -> {r.status_code} {r.text[:200]}")
         return r
@@ -234,24 +222,17 @@ def load_binance_perp_bases_cached(force_refresh: bool = False) -> Dict[str, Any
         if j is not None:
             return j
 
-    last_exc = None
-    for url in BINANCE_FUTURES_INFO_CANDIDATES:
-        try:
-            data = Http.get(url).json()
-            res = {}
-            for s in data.get("symbols", []):
-                if s.get("contractType") == "PERPETUAL" and s.get("status") == "TRADING":
-                    res[s["baseAsset"].upper()] = s
-            write_json_atomic(cache_path, res)
-            return res
-        except Exception as e:
-            last_exc = e
-
-    # fallback a cache anche se vecchia (meglio di zero)
-    j2 = read_json(cache_path)
-    if not j2:
-        sys.stderr.write(f"[test4 diag] Binance perps fetch FAILED and no cache: {repr(last_exc)}\n")
-    return j2 or {}
+    try:
+        data = Http.get(BINANCE_FUTURES_INFO).json()
+        res = {}
+        for s in data.get("symbols", []):
+            if s.get("contractType") == "PERPETUAL" and s.get("status") == "TRADING":
+                res[s["baseAsset"].upper()] = s
+        write_json(cache_path, res)
+        return res
+    except Exception:
+        j2 = read_json(cache_path)
+        return j2 or {}
 
 def load_bybit_perp_bases_cached(force_refresh: bool = False) -> Dict[str, Any]:
     cache_path = joinp(settings.cache_root, "perps_bybit.json")
@@ -278,12 +259,10 @@ def load_bybit_perp_bases_cached(force_refresh: bool = False) -> Dict[str, Any]:
             cursor = (data.get("result") or {}).get("nextPageCursor")
             if not cursor:
                 break
-        write_json_atomic(cache_path, res)
+        write_json(cache_path, res)
         return res
-    except Exception as e:
+    except Exception:
         j2 = read_json(cache_path)
-        if not j2:
-            sys.stderr.write(f"[test4 diag] Bybit perps fetch FAILED and no cache: {repr(e)}\n")
         return j2 or {}
 
 def base_symbol_candidates(base: str) -> List[str]:
@@ -311,10 +290,14 @@ def fetch_coin_full(cid: str, cg_rl: RateLimiter, force_refresh: bool = False) -
         j = cache_get(cache_path, settings.ttl_cg_coin_sec)
         if j is not None:
             return j
-    url = f"{COINGECKO}/coins/{cid}?localization=false&tickers=true&market_data=false&community_data=false&developer_data=false&sparkline=false"
+    url = (
+        f"{COINGECKO}/coins/{cid}"
+        "?localization=false&tickers=true&market_data=false&community_data=false"
+        "&developer_data=false&sparkline=false"
+    )
     cg_rl.wait()
     data = Http.get(url).json()
-    write_json_atomic(cache_path, data)
+    write_json(cache_path, data)
     return data
 
 def bsc_contract_address(coin: Dict[str, Any]) -> Optional[str]:
@@ -329,7 +312,6 @@ def bsc_contract_address(coin: Dict[str, Any]) -> Optional[str]:
 def top_spot_cex_bitget_ok(coin: Dict[str, Any], dominance: float, max_scan: int) -> Tuple[bool, Optional[str]]:
     """
     Ritorna (is_bitget_top, top_name).
-    Più permissivo: considera Bitget se 'bitget' appare in name o identifier.
     """
     tickers = coin.get("tickers", []) or []
     best_name, best_vol = None, -1.0
@@ -394,7 +376,7 @@ def load_cg_coins_list_cached(cg_rl: RateLimiter, force_refresh: bool = False) -
     url = f"{COINGECKO}/coins/list?include_platform=true"
     cg_rl.wait()
     data = Http.get(url).json()
-    write_json_atomic(cache_path, data)
+    write_json(cache_path, data)
     return data
 
 def choose_best_cg_id_for_symbol(symbol: str, cg_list: List[Dict[str, Any]]) -> Optional[Tuple[str, str]]:
@@ -443,24 +425,19 @@ def main_bsc_pair_on_pancake(addr: str, ds_rl: RateLimiter) -> Optional[Dict[str
 
     return best
 
-# --------------------------- State index --------------------------- #
+# --------------------------- State --------------------------- #
 
-def state_file_path() -> str:
-    return joinp(settings.state_root, "test4_state.json")
+def state_path() -> str:
+    return joinp(settings.state_root, "state.json")
 
 def load_state() -> Dict[str, Any]:
     ensure_dir(settings.state_root)
-    p = Path(state_file_path())
-    if not p.exists():
-        return {}
-    try:
-        return json.loads(p.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    j = read_json(state_path())
+    return j or {}
 
 def save_state(state: Dict[str, Any]):
     ensure_dir(settings.state_root)
-    write_json_atomic(state_file_path(), state)
+    write_json(state_path(), state)
 
 def stale_by_days(ts: Optional[int], days: int) -> bool:
     if days <= 0:
@@ -497,24 +474,30 @@ class FunnelRow:
 
 state_lock = threading.Lock()
 
-def screen_coin(cid: str, sym_hint: str,
-                binance_bases: Dict[str, Any],
-                bybit_bases: Dict[str, Any],
-                cg_rl: RateLimiter, ds_rl: RateLimiter,
-                state: Dict[str, Any]) -> Tuple[FunnelRow, Optional[CheckResult]]:
+def screen_coin(
+    cid: str, sym_hint: str,
+    binance_bases: Dict[str, Any],
+    bybit_bases: Dict[str, Any],
+    cg_rl: RateLimiter, ds_rl: RateLimiter,
+    state: Dict[str, Any]
+) -> Tuple[FunnelRow, Optional[CheckResult]]:
     with state_lock:
         st = dict(state.get(cid, {}))
 
     last_checked = st.get("last_checked")
     if not stale_by_days(last_checked, settings.skip_unchanged_days):
-        fr = FunnelRow(id=cid, symbol=(sym_hint or "").upper(), name=cid,
-                       skipped=True, reason=f"recent (<= {settings.skip_unchanged_days}d)",
-                       s1_perps=False, s2_bitget=False, s3_bsc_pancake=False)
+        fr = FunnelRow(
+            id=cid, symbol=(sym_hint or "").upper(), name=cid,
+            skipped=True, reason=f"recent (<= {settings.skip_unchanged_days}d)",
+            s1_perps=False, s2_bitget=False, s3_bsc_pancake=False
+        )
         return fr, None
 
-    fr = FunnelRow(id=cid, symbol=(sym_hint or "").upper(), name=cid,
-                   skipped=False, reason=None,
-                   s1_perps=False, s2_bitget=False, s3_bsc_pancake=False)
+    fr = FunnelRow(
+        id=cid, symbol=(sym_hint or "").upper(), name=cid,
+        skipped=False, reason=None,
+        s1_perps=False, s2_bitget=False, s3_bsc_pancake=False
+    )
 
     # ---- Stage 1: Perps su entrambi ----
     if not has_perps_on_both(binance_bases, bybit_bases, fr.symbol):
@@ -573,7 +556,6 @@ def screen_coin(cid: str, sym_hint: str,
 
     lp_liq = float(((pair.get("liquidity") or {}).get("usd") or 0))
     pool_addr = (pair.get("pairAddress") or "").lower()
-
     fr.s3_bsc_pancake = True
     fr.lp_pair = {
         "dexId": dexid, "pairAddress": pool_addr,
@@ -595,12 +577,14 @@ def screen_coin(cid: str, sym_hint: str,
 
 # --------------------------- Seeds --------------------------- #
 
-def build_seed_from_perps(cg_rl: RateLimiter,
-                          binance_bases: Dict[str, Any],
-                          bybit_bases: Dict[str, Any]) -> List[Tuple[str, str]]:
+def build_seed_from_perps(
+    cg_rl: RateLimiter,
+    binance_bases: Dict[str, Any],
+    bybit_bases: Dict[str, Any]
+) -> List[Tuple[str, str]]:
     """
     Seed robusto:
-    1) Binance∪Bybit
+    1) Prende Binance∪Bybit
     2) Normalizza (1000XXX -> XXX)
     3) Filtra con has_perps_on_both()
     4) Mappa a CoinGecko id con /coins/list?include_platform=true
@@ -636,12 +620,6 @@ def build_seed_from_perps(cg_rl: RateLimiter,
         except Exception:
             pass
 
-    # diagnostica seed
-    sys.stderr.write(
-        f"[test4 diag] seed_build | binance_perps={len(binance_bases)} bybit_perps={len(bybit_bases)} "
-        f"raw_syms={len(raw_syms)} eligible={len(eligible)} mapped={len(mapped)} missing_map={len(missing)}\n"
-    )
-
     return mapped
 
 # --------------------------- Rendering TOP-only --------------------------- #
@@ -668,7 +646,6 @@ def build_top_only_output(results: List[CheckResult]) -> str:
 
 def parse_args() -> Settings:
     ap = argparse.ArgumentParser(description="Crypto screener per CEX/DEX (3 criteri + TOP-only, cache-aware & robust)")
-
     ap.add_argument("--pages", type=int, default=1)
     ap.add_argument("--per-page", type=int, default=250)
     ap.add_argument("--ids", type=str, default=None, help="Lista di ids CoinGecko separati da virgola (bypassa seed)")
@@ -681,8 +658,12 @@ def parse_args() -> Settings:
     ap.add_argument("--max-tickers-scan", type=int, default=15)
 
     ap.add_argument("--ttl-cg", type=int, default=12*3600)
-    ap.add_argument("--ttl-cg-list", type=int, default=None,
-                    help="Override TTL cache CoinGecko coins/list (sec). Default: min(--ttl-cg, 2h).")
+    ap.add_argument(
+        "--ttl-cg-list",
+        type=int,
+        default=None,
+        help="Override TTL cache CoinGecko coins/list (sec). Default: min(--ttl-cg, 2h)."
+    )
     ap.add_argument("--ttl-perps", type=int, default=6*3600)
     ap.add_argument("--ttl-ds", type=int, default=24*3600)
 
@@ -691,7 +672,8 @@ def parse_args() -> Settings:
     ap.add_argument("--cache-root", type=str, default=".cache")
     ap.add_argument("--state-root", type=str, default="state")
 
-    ap.add_argument("--rps-cg", type=float, default_toggle=None)
+    # FIX: argparse non supporta "default_toggle". Qui deve essere "default=<float>"
+    ap.add_argument("--rps-cg", type=float, default=0.5)
     ap.add_argument("--rps-ds", type=float, default=2.0)
 
     ap.add_argument("--funnel-show", type=int, default=30)
@@ -705,7 +687,6 @@ def parse_args() -> Settings:
     ap.add_argument("--no-verbose", dest="verbose", action="store_false")
     ap.set_defaults(verbose=True)
 
-    # compat: alcuni env passano float None -> gestisco dopo
     args = ap.parse_args()
 
     refresh_perps = bool(args.refresh_perps or args.refresh_all)
@@ -714,41 +695,37 @@ def parse_args() -> Settings:
     ttl_cg_coin = int(args.ttl_cg)
     ttl_cg_list = int(args.ttl_cg_list) if args.ttl_cg_list is not None else min(ttl_cg_coin, 2 * 3600)
 
-    # rps_cg: se non è stato passato, default 1.0
-    rps_cg = getattr(args, "rps_cg", None)
-    rps_cg = 1.0 if (rps_cg is None) else float(rps_cg)
-
     return Settings(
         pages=args.pages,
         per_page=args.per_page,
         ids=[x.strip() for x in args.ids.split(",")] if args.ids else None,
         workers=max(1, args.workers),
 
-        min_pair_liquidity_usd=args.min_liq,
-        require_v3=args.require_v3,
+        min_pair_liquidity_usd=float(args.min_liq),
+        require_v3=bool(args.require_v3),
 
-        max_tickers_scan=args.max_tickers_scan,
-        bitget_dominance=args.dominance,
+        max_tickers_scan=int(args.max_tickers_scan),
+        bitget_dominance=float(args.dominance),
 
-        ttl_cg_coin_sec=ttl_cg_coin,
-        ttl_cg_list_sec=ttl_cg_list,
+        ttl_cg_coin_sec=int(ttl_cg_coin),
+        ttl_cg_list_sec=int(ttl_cg_list),
         ttl_perps_sec=int(args.ttl_perps),
         ttl_dexscreener_sec=int(args.ttl_ds),
 
-        skip_unchanged_days=args.skip_unchanged_days,
+        skip_unchanged_days=int(args.skip_unchanged_days),
 
-        cache_root=args.cache_root,
-        state_root=args.state_root,
+        cache_root=str(args.cache_root),
+        state_root=str(args.state_root),
 
-        verbose=args.verbose,
-        quiet=args.quiet,
+        verbose=bool(args.verbose),
+        quiet=bool(args.quiet),
 
-        rps_cg=max(0.2, rps_cg),
+        rps_cg=max(0.2, float(args.rps_cg)),
         rps_ds=max(0.5, float(args.rps_ds)),
 
-        funnel_show=max(1, args.funnel_show),
+        funnel_show=max(1, int(args.funnel_show)),
 
-        seed_from=args.seed_from,
+        seed_from=str(args.seed_from),
 
         refresh_perps=refresh_perps,
         refresh_cg=refresh_cg,
@@ -771,35 +748,30 @@ def main():
     ds_rl = RateLimiter(settings.rps_ds)
 
     binance_bases = load_binance_perp_bases_cached(force_refresh=settings.refresh_perps)
-    bybit_bases = load_bybit_perp_bases_cached(force_refresh=settings.refresh_perps)
-
-    # debug sizes sempre su stderr
-    sys.stderr.write(f"[test4 diag] perps sizes | binance={len(binance_bases)} bybit={len(bybit_bases)}\n")
+    bybit_bases   = load_bybit_perp_bases_cached(force_refresh=settings.refresh_perps)
 
     if settings.ids:
         id_syms = [(cid, "") for cid in settings.ids]
     else:
+        id_syms = []
         if settings.seed_from == "perps":
             id_syms = build_seed_from_perps(cg_rl, binance_bases, bybit_bases)
-        else:
-            id_syms = []  # non usato
+
+            # Fallback: se seed=0, prova una volta refresh (perps+cg list)
+            if not id_syms:
+                binance_bases2 = load_binance_perp_bases_cached(force_refresh=True)
+                bybit_bases2   = load_bybit_perp_bases_cached(force_refresh=True)
+                # forza refresh lista CG una volta
+                try:
+                    load_cg_coins_list_cached(cg_rl, force_refresh=True)
+                except Exception:
+                    pass
+                id_syms = build_seed_from_perps(cg_rl, binance_bases2, bybit_bases2)
 
     state: Dict[str, Any] = load_state()
 
     results: List[CheckResult] = []
     funnel_rows: List[FunnelRow] = []
-
-    if not id_syms:
-        # nessun seed: stampo TOP header comunque, e diagnostica dettagliata
-        out = build_top_only_output([])
-        print(out)
-        sys.stderr.write(
-            "[test4 diag] TOP=0 | seeds=0 | statuses={} | "
-            f"min_liq={settings.min_pair_liquidity_usd} | dominance={settings.bitget_dominance} | "
-            f"max_scan={settings.max_tickers_scan} | ttl_cg_list={settings.ttl_cg_list_sec}s | "
-            f"ttl_cg_coin={settings.ttl_cg_coin_sec}s | ttl_perps={settings.ttl_perps_sec}s\n"
-        )
-        return
 
     with ThreadPoolExecutor(max_workers=settings.workers) as ex:
         futures = {
@@ -814,9 +786,11 @@ def main():
 
     save_state(state)
 
+    # stdout: solo TOP section
     out = build_top_only_output(results)
     print(out)
 
+    # Diagnostica su stderr se TOP è vuoto
     top_count = len([r for r in results if r.score() >= 2 and r.ok()])
     if top_count == 0:
         try:
@@ -835,4 +809,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
