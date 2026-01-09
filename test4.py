@@ -695,6 +695,7 @@ def parse_args() -> Settings:
     ttl_cg_coin = int(args.ttl_cg)
     ttl_cg_list = int(args.ttl_cg_list) if args.ttl_cg_list is not None else min(ttl_cg_coin, 2 * 3600)
 
+
     return Settings(
         pages=args.pages,
         per_page=args.per_page,
