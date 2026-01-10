@@ -19,15 +19,14 @@ e conversione degli importi in USD (≈ USDT) usando priceUsd della *stessa* pai
 Ordina i risultati per SCORE100 = (market cap USD) / (costo +100% in USD), in ordine decrescente.
 Mostra anche SCORE50 e SCORE200.
 
-Fix principali (rispetto alle versioni che ti stanno dando problemi):
-- run_test4_and_capture NON usa check=True: gestiamo returncode
-- se test4.py fallisce (rc != 0 e rc != 2) -> exit(1) con diagnostica
-- se non ci sono coin TOP -> exit(2) e genera msg_summary.html con diag
-- CoinGecko coins list cache (fallback mcap) usa TTL configurabile (args.ttl_cg_list) invece di 48h fisse
-- path cache CoinGecko più pulita: .cache/coingecko/coins_list_include_platform.json
-- mantiene --ttl-cg-list pass-through verso test4.py
-- mantiene --require-v3 pass-through verso test4.py
-- mantiene --per-pool-debug
+Modifiche richieste:
+- Migliorato formato messaggi per ogni coin (più pulito, blocco DeFi in tabella monospace, link chiari).
+- Il messaggio riassuntivo "TOP Screener + DeFi" ora è UNA SOLA TABELLA SEMPLICE con i nomi delle coin (e symbol),
+  senza metriche (niente MC/LP/score/+50/+100/+200), in modo Telegram-friendly (usa <pre>, non <table> HTML).
+
+Note:
+- Telegram HTML NON supporta <table>, quindi la “tabella” è resa con <pre>.
+- Ora viene generato anche il file coin_XXX_*.html anche se la parte DeFi fallisce (messaggio di errore per quella coin).
 """
 
 UA = (
@@ -59,6 +58,97 @@ def log_step(i: int, n: int, symbol: str, pair: str, msg: str):
 
 def log_err(i: int, n: int, symbol: str, pair: str, msg: str):
     print(f"[{i}/{n}] {symbol} ({pair}) | ERROR: {msg}", file=sys.stderr, flush=True)
+
+
+def truncate(s: str, max_len: int) -> str:
+    s = s or ""
+    if len(s) <= max_len:
+        return s
+    if max_len <= 1:
+        return s[:max_len]
+    return s[: max_len - 1] + "…"
+
+
+def fmt_x(v: Optional[float]) -> str:
+    if not isinstance(v, (int, float)):
+        return "n.d."
+    try:
+        return f"{v:.2f}x"
+    except Exception:
+        return "n.d."
+
+
+def format_usd(x):
+    try:
+        return f"{int(round(float(x))):,}$".replace(",", ".")
+    except Exception:
+        return "n.d."
+
+
+def usd_fmt(x: Optional[float]) -> str:
+    return format_usd(x) if x is not None else "n.d."
+
+
+def decfmt(d: Decimal, decimals: int = 6) -> str:
+    try:
+        q = Decimal("1." + "0" * decimals)
+        return str(d.quantize(q).normalize())
+    except Exception:
+        return str(d)
+
+
+def safe_div(num, den):
+    try:
+        if num is None or den is None:
+            return None
+        if float(den) == 0.0:
+            return None
+        return float(num) / float(den)
+    except Exception:
+        return None
+
+
+def build_pre_table(rows_2d, headers=None) -> str:
+    """
+    Ritorna una tabella monospace (stringa) da mettere dentro <pre> ... </pre>.
+    rows_2d: lista di righe (lista/tuple di celle string).
+    headers: opzionale lista di intestazioni.
+    """
+    all_rows = []
+    if headers:
+        all_rows.append([str(x) for x in headers])
+    all_rows += [[str(x) for x in r] for r in rows_2d]
+
+    if not all_rows:
+        return ""
+
+    ncol = max(len(r) for r in all_rows)
+    for r in all_rows:
+        while len(r) < ncol:
+            r.append("")
+
+    widths = [0] * ncol
+    for r in all_rows:
+        for j, cell in enumerate(r):
+            widths[j] = max(widths[j], len(cell))
+
+    def fmt_row(r):
+        parts = []
+        for j, cell in enumerate(r):
+            parts.append(cell.ljust(widths[j]))
+        return "  ".join(parts).rstrip()
+
+    out_lines = []
+    if headers:
+        out_lines.append(fmt_row(all_rows[0]))
+        out_lines.append("-" * min(120, len(out_lines[0])))
+        for r in all_rows[1:]:
+            out_lines.append(fmt_row(r))
+    else:
+        for r in all_rows:
+            out_lines.append(fmt_row(r))
+
+    return "\n".join(out_lines)
 
 
 # ---------------- screener ---------------- #
@@ -215,7 +305,6 @@ def fetch_bnb_usd_from_ds(prefer_chain: str = "bsc") -> Optional[float]:
             liq = float(((p.get("liquidity") or {}).get("usd") or 0))
             price_usd = p.get("priceUsd")
             base = p.get("baseToken") or {}
-            quote = p.get("quoteToken") or {}
             base_addr = (base.get("address") or "").lower()
 
             if base_addr == WBNB_ADDR and price_usd is not None:
@@ -300,13 +389,6 @@ def fetch_cg_marketcap_usd(coin_id: str):
         return None
 
 
-def format_usd(x):
-    try:
-        return f"{int(round(float(x))):,}$".replace(",", ".")
-    except Exception:
-        return "n.d."
-
-
 # ---------------- Web3 helper (retry & reuse) ---------------- #
 
 def make_web3_with_retry(defi_module, rpc_url: str, attempts: int = 3, base_sleep: float = 2.0):
@@ -372,6 +454,200 @@ def compute_push_amounts_with_defi(pool: str, rpc_url: str, w3=None):
         "plus100_str": rows[1]["token1_needed"],
         "plus200_str": rows[2]["token1_needed"],
     }
+
+
+def compute_u1_usd_per_token1(ds: dict, push: dict, pair: str, bnb_usd_global: Optional[float]) -> Optional[Decimal]:
+    """
+    Stima U1 = USD per 1 token1.
+    Strategia identica alla tua, ma isolata in funzione per chiarezza.
+    """
+    try:
+        # --- Variabili token per fallback esterno ---
+        t0_addr = (push["token0_address"] or "").lower()
+        t1_addr = (push["token1_address"] or "").lower()
+        t0_sym = (push["token0_symbol"] or "").upper().strip()
+        t1_sym = (push["token1_symbol"] or "").upper().strip()
+
+        STABLE_SYMS = {"USDT", "USDC", "BUSD", "FDUSD", "DAI", "USDD", "USDP", "TUSD", "USD1"}
+        STABLE_ADDRS_BSC = {
+            "0x55d398326f99059ff775485246999027b3197955",  # USDT
+            "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",  # USDC
+            "0xe9e7cea3dedca5984780bafc599bd69add087d56",  # BUSD
+            "0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3",  # DAI
+            "0xd17479997f34dd9156deef8f95a52d81d265be9c",  # USDD
+            "0x1456688345527be1f37e9e627da0837d6f08c925",  # USDP
+            "0x14016e85a25aeb13065688cafb43044c2ef86784",  # TUSD
+            "0xbd0a4bf098261673d5e6e600fd87ddcd756efb62",  # FDUSD
+        }
+
+        NATIVE_WRAPPED_SYMS_BSC = {"WBNB"}
+        NATIVE_WRAPPED_ADDRS_BSC = {"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"}
+
+        U1 = None
+
+        P0_dec = push.get("P0")
+        priceUsd = ds.get("priceUsd")
+        priceNative = ds.get("priceNative")
+
+        base_info = ds.get("baseToken") or {}
+        quote_info = ds.get("quoteToken") or {}
+
+        base_addr = (base_info.get("address") or "").lower()
+        quote_addr = (quote_info.get("address") or "").lower()
+        base_sym = (base_info.get("symbol") or "").upper().strip()
+        quote_sym = (quote_info.get("symbol") or "").upper().strip()
+
+        if (t1_sym in STABLE_SYMS) or (t1_addr in STABLE_ADDRS_BSC):
+            U1 = Decimal("1")
+
+        if U1 is None and priceUsd is not None:
+            base_is_t0 = bool(base_addr) and (base_addr == t0_addr)
+            base_is_t1 = bool(base_addr) and (base_addr == t1_addr)
+            quote_is_t0 = bool(quote_addr) and (quote_addr == t0_addr)
+            quote_is_t1 = bool(quote_addr) and (quote_addr == t1_addr)
+
+            if base_is_t1 or quote_is_t0:
+                U1 = Decimal(str(priceUsd))
+            elif (base_is_t0 or quote_is_t1) and P0_dec is not None and P0_dec != 0:
+                U1 = Decimal(str(priceUsd)) / P0_dec
+
+        if (
+            U1 is None and priceUsd is not None and priceNative is not None and
+            (t1_sym in NATIVE_WRAPPED_SYMS_BSC or t1_addr in NATIVE_WRAPPED_ADDRS_BSC)
+        ):
+            denom = Decimal(str(priceNative))
+            if denom != 0:
+                U1 = Decimal(str(priceUsd)) / denom
+
+        if U1 is None and priceUsd is not None:
+            base_is_t0_sym = base_sym and (base_sym == t0_sym)
+            base_is_t1_sym = base_sym and (base_sym == t1_sym)
+            quote_is_t0_sym = quote_sym and (quote_sym == t0_sym)
+            quote_is_t1_sym = quote_sym and (quote_sym == t1_sym)
+
+            if base_is_t1_sym or quote_is_t0_sym:
+                U1 = Decimal(str(priceUsd))
+            elif (base_is_t0_sym or quote_is_t1_sym) and P0_dec is not None and P0_dec != 0:
+                U1 = Decimal(str(priceUsd)) / P0_dec
+
+        if U1 is None:
+            alt_t1 = fetch_ds_token_price_usd_for_pair(t1_addr, pair)
+            if alt_t1 is not None:
+                U1 = Decimal(str(alt_t1))
+
+        if U1 is None:
+            alt_t0 = fetch_ds_token_price_usd_for_pair(t0_addr, pair)
+            if alt_t0 is not None and P0_dec is not None and P0_dec != 0:
+                U1 = Decimal(str(alt_t0)) / P0_dec
+
+        if U1 is None and (t1_sym in NATIVE_WRAPPED_SYMS_BSC or t1_addr in NATIVE_WRAPPED_ADDRS_BSC):
+            if bnb_usd_global is None:
+                bnb_usd_global = fetch_bnb_usd_from_ds(prefer_chain="bsc")
+            if bnb_usd_global is not None and bnb_usd_global > 0:
+                U1 = Decimal(str(bnb_usd_global))
+
+        if U1 is not None and (U1 <= 0 or U1 < Decimal("1e-9")):
+            U1 = None
+
+        return U1
+    except Exception:
+        return None
+
+
+def build_coin_message_html(
+    symbol: str,
+    name: str,
+    pair: str,
+    url: str,
+    mc_usd: Optional[float],
+    lp_usd: Optional[int],
+    ds: dict,
+    push: Optional[dict],
+    plus50_usd_value: Optional[float],
+    plus100_usd_value: Optional[float],
+    plus200_usd_value: Optional[float],
+    score50: Optional[float],
+    score100: Optional[float],
+    score200: Optional[float],
+    u1: Optional[Decimal],
+    error: Optional[str] = None,
+) -> str:
+    """
+    Messaggio HTML (Telegram-friendly).
+    """
+    mc_str = format_usd(mc_usd) if mc_usd is not None else "n.d."
+    lp_str = format_usd(lp_usd) if lp_usd is not None else "n.d."
+
+    base_sym = ((ds.get("baseToken") or {}).get("symbol") or "").upper().strip()
+    priceUsd = ds.get("priceUsd")
+
+    if priceUsd is not None:
+        if base_sym:
+            price_str = f"{priceUsd:.8f} USD / {base_sym}"
+        else:
+            price_str = f"{priceUsd:.8f} USD"
+    else:
+        price_str = "n.d."
+
+    # Header
+    lines = []
+    lines.append(f"💠 <b>{htmlesc(symbol)}</b> — {htmlesc(name)}")
+    lines.append(f"<a href=\"{htmlesc(url)}\">DexScreener</a> • Pool: <code>{htmlesc(pair)}</code>")
+    lines.append("")
+    lines.append("<b>Market</b>")
+    lines.append(f"• Market Cap: <b>{htmlesc(mc_str)}</b>")
+    lines.append(f"• Liquidity: <b>{htmlesc(lp_str)}</b>")
+    lines.append(f"• Price: <b>{htmlesc(price_str)}</b>")
+
+    if u1 is not None:
+        try:
+            u1s = f"{float(u1):.6f}"
+        except Exception:
+            u1s = str(u1)
+        lines.append(f"• Token1 est. price: <b>~{htmlesc(u1s)} USD</b>")
+    else:
+        lines.append("• Token1 est. price: <b>n.d.</b>")
+
+    lines.append("")
+
+    if error:
+        # Se DeFi fallisce: messaggio comunque utile
+        lines.append("⚠️ <b>DeFi</b>")
+        lines.append(f"• Stato: <b>ERRORE</b>")
+        lines.append(f"• Dettaglio: <code>{htmlesc(truncate(error, 700))}</code>")
+        lines.append("")
+        lines.append("<b>Scores</b>")
+        lines.append(f"• SCORE50: <b>{htmlesc(fmt_x(score50))}</b> | SCORE100: <b>{htmlesc(fmt_x(score100))}</b> | SCORE200: <b>{htmlesc(fmt_x(score200))}</b>")
+        return "\n".join(lines).strip() + "\n"
+
+    # DeFi block
+    if push is not None:
+        token1_sym = (push.get("token1_symbol") or "TOKEN1").upper().strip()
+
+        a50 = push.get("plus50_token1", Decimal("0"))
+        a100 = push.get("plus100_token1", Decimal("0"))
+        a200 = push.get("plus200_token1", Decimal("0"))
+
+        t_rows = [
+            ["+50%",  f"{decfmt(a50)} {token1_sym}",  usd_fmt(plus50_usd_value)],
+            ["+100%", f"{decfmt(a100)} {token1_sym}", usd_fmt(plus100_usd_value)],
+            ["+200%", f"{decfmt(a200)} {token1_sym}", usd_fmt(plus200_usd_value)],
+        ]
+        table_txt = build_pre_table(t_rows, headers=["Target", "Token1 needed", "USD est."])
+
+        lines.append("📈 <b>DeFi targets</b>")
+        lines.append(f"<pre>{htmlesc(table_txt)}</pre>")
+        lines.append("")
+
+    # Scores
+    lines.append("<b>Scores</b>")
+    lines.append(
+        f"• SCORE50: <b>{htmlesc(fmt_x(score50))}</b> | "
+        f"SCORE100: <b>{htmlesc(fmt_x(score100))}</b> | "
+        f"SCORE200: <b>{htmlesc(fmt_x(score200))}</b>"
+    )
+
+    return "\n".join(lines).strip() + "\n"
 
 
 # ---------------- main ---------------- #
@@ -563,227 +839,87 @@ def main():
             except Exception as e:
                 log_err(idx, n, symbol, pair, f"CoinGecko KO: {e}")
 
+        url = ds.get("url") or f"https://dexscreener.com/bsc/{pair}"
+
         # 3) DeFi calc
+        push = None
+        plus50_usd_value = plus100_usd_value = plus200_usd_value = None
+        score50 = score100 = score200 = None
+        u1 = None
+        defi_error = None
+
         try:
             log_step(idx, n, symbol, pair, "DeFi: compute +50/+100/+200...")
             d0 = time.perf_counter()
             push = compute_push_amounts_with_defi(pair, args.rpc, w3=w3_shared)
             ddt = time.perf_counter() - d0
 
-            plus50_str = push["plus50_str"]
-            plus100_str = push["plus100_str"]
-            plus200_str = push["plus200_str"]
-
             log_step(
                 idx, n, symbol, pair,
-                f"DeFi OK in {ddt:.2f}s | token1={push['token1_symbol']} | +50={plus50_str} | +100={plus100_str} | +200={plus200_str}"
+                f"DeFi OK in {ddt:.2f}s | token1={push['token1_symbol']} | +50={push['plus50_str']} | +100={push['plus100_str']} | +200={push['plus200_str']}"
             )
+
+            # 4) Conversione in USD via U1
+            u1 = compute_u1_usd_per_token1(ds, push, pair, bnb_usd_global)
+
+            a50 = push["plus50_token1"]
+            a100 = push["plus100_token1"]
+            a200 = push["plus200_token1"]
+
+            if u1 is not None:
+                plus50_usd_value = float(a50 * u1)
+                plus100_usd_value = float(a100 * u1)
+                plus200_usd_value = float(a200 * u1)
+
+            marketcap_val = marketcap_usd if marketcap_usd is not None else None
+            score50 = safe_div(marketcap_val, plus50_usd_value)
+            score100 = safe_div(marketcap_val, plus100_usd_value)
+            score200 = safe_div(marketcap_val, plus200_usd_value)
+
         except Exception as e:
-            msg = str(e)
+            defi_error = str(e)
             if args.per_pool_debug:
-                log_err(idx, n, symbol, pair, f"DEBUG ERR: {msg}")
-            plus50_disp = plus100_disp = plus200_disp = f"ERR ({msg})"
-            rows.append(
-                {
-                    "symbol": symbol,
-                    "name": name,
-                    "pair": pair,
-                    "lp_usd": lp_usd,
-                    "marketcap_usd": marketcap_usd,
-                    "plus50": plus50_disp,
-                    "plus100": plus100_disp,
-                    "plus200": plus200_disp,
-                    "plus50_usd_value": None,
-                    "plus100_usd_value": None,
-                    "plus200_usd_value": None,
-                    "score50": None,
-                    "score100": None,
-                    "score200": None,
-                    "url": ds.get("url") or f"https://dexscreener.com/bsc/{pair}",
-                    "priceUsd": ds.get("priceUsd"),
-                    "baseToken": ds.get("baseToken") or {},
-                }
-            )
-            log_step(idx, n, symbol, pair, f"DeFi risultato: {plus50_disp}")
-            continue
+                log_err(idx, n, symbol, pair, f"DEBUG ERR: {defi_error}")
+            log_step(idx, n, symbol, pair, f"DeFi KO: {truncate(defi_error, 200)}")
 
-        # --- Variabili token per fallback esterno ---
-        t0_addr = (push["token0_address"] or "").lower()
-        t1_addr = (push["token1_address"] or "").lower()
-        t0_sym = (push["token0_symbol"] or "").upper().strip()
-        t1_sym = (push["token1_symbol"] or "").upper().strip()
-
-        # 4) Conversione ≈ USDT (U1 = USD/token1)
-        U1 = None
-
-        STABLE_SYMS = {"USDT", "USDC", "BUSD", "FDUSD", "DAI", "USDD", "USDP", "TUSD", "USD1"}
-        STABLE_ADDRS_BSC = {
-            "0x55d398326f99059ff775485246999027b3197955",  # USDT
-            "0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d",  # USDC
-            "0xe9e7cea3dedca5984780bafc599bd69add087d56",  # BUSD
-            "0x1af3f329e8be154074d8769d1ffa4ee058b1dbc3",  # DAI
-            "0xd17479997f34dd9156deef8f95a52d81d265be9c",  # USDD
-            "0x1456688345527be1f37e9e627da0837d6f08c925",  # USDP
-            "0x14016e85a25aeb13065688cafb43044c2ef86784",  # TUSD
-            "0xbd0a4bf098261673d5e6e600fd87ddcd756efb62",  # FDUSD (nota: può cambiare, ma ok come euristica)
-        }
-
-        NATIVE_WRAPPED_SYMS_BSC = {"WBNB"}
-        NATIVE_WRAPPED_ADDRS_BSC = {"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"}
-
-        try:
-            P0_dec = push["P0"]
-            priceUsd = ds.get("priceUsd")
-            priceNative = ds.get("priceNative")
-
-            base_info = ds.get("baseToken") or {}
-            quote_info = ds.get("quoteToken") or {}
-
-            base_addr = (base_info.get("address") or "").lower()
-            quote_addr = (quote_info.get("address") or "").lower()
-            base_sym = (base_info.get("symbol") or "").upper().strip()
-            quote_sym = (quote_info.get("symbol") or "").upper().strip()
-
-            if (t1_sym in STABLE_SYMS) or (t1_addr in STABLE_ADDRS_BSC):
-                U1 = Decimal("1")
-
-            if U1 is None and priceUsd is not None:
-                base_is_t0 = bool(base_addr) and (base_addr == t0_addr)
-                base_is_t1 = bool(base_addr) and (base_addr == t1_addr)
-                quote_is_t0 = bool(quote_addr) and (quote_addr == t0_addr)
-                quote_is_t1 = bool(quote_addr) and (quote_addr == t1_addr)
-
-                if base_is_t1 or quote_is_t0:
-                    U1 = Decimal(str(priceUsd))
-                elif (base_is_t0 or quote_is_t1) and P0_dec is not None and P0_dec != 0:
-                    U1 = Decimal(str(priceUsd)) / P0_dec
-
-            if (
-                U1 is None and priceUsd is not None and priceNative is not None and
-                (t1_sym in NATIVE_WRAPPED_SYMS_BSC or t1_addr in NATIVE_WRAPPED_ADDRS_BSC)
-            ):
-                denom = Decimal(str(priceNative))
-                if denom != 0:
-                    U1 = Decimal(str(priceUsd)) / denom
-
-            if U1 is None and priceUsd is not None:
-                base_is_t0_sym = base_sym and (base_sym == t0_sym)
-                base_is_t1_sym = base_sym and (base_sym == t1_sym)
-                quote_is_t0_sym = quote_sym and (quote_sym == t0_sym)
-                quote_is_t1_sym = quote_sym and (quote_sym == t1_sym)
-
-                if base_is_t1_sym or quote_is_t0_sym:
-                    U1 = Decimal(str(priceUsd))
-                elif (base_is_t0_sym or quote_is_t1_sym) and P0_dec is not None and P0_dec != 0:
-                    U1 = Decimal(str(priceUsd)) / P0_dec
-
-            if U1 is None:
-                alt_t1 = fetch_ds_token_price_usd_for_pair(t1_addr, pair)
-                if alt_t1 is not None:
-                    U1 = Decimal(str(alt_t1))
-
-            if U1 is None:
-                alt_t0 = fetch_ds_token_price_usd_for_pair(t0_addr, pair)
-                if alt_t0 is not None and P0_dec is not None and P0_dec != 0:
-                    U1 = Decimal(str(alt_t0)) / P0_dec
-
-            if U1 is None and (t1_sym in NATIVE_WRAPPED_SYMS_BSC or t1_addr in NATIVE_WRAPPED_ADDRS_BSC):
-                bnb_usd = fetch_bnb_usd_from_ds(prefer_chain="bsc")
-                if bnb_usd is not None and bnb_usd > 0:
-                    U1 = Decimal(str(bnb_usd))
-
-            if U1 is not None and (U1 <= 0 or U1 < Decimal("1e-9")):
-                U1 = None
-        except Exception:
-            U1 = None
-
-        if U1 is None and (t1_sym in {"WBNB"} or t1_addr in {"0xbb4cdb9cbd36b01bd1cbaebf2de08d9173bc095c"}):
-            if bnb_usd_global is None:
-                bnb_usd_global = fetch_bnb_usd_from_ds(prefer_chain="bsc")
-            if bnb_usd_global is not None and bnb_usd_global > 0:
-                U1 = Decimal(str(bnb_usd_global))
-
-        def decfmt(d: Decimal, decimals: int = 6) -> str:
-            try:
-                q = Decimal("1." + "0" * decimals)
-                return str(d.quantize(q).normalize())
-            except Exception:
-                return str(d)
-
-        def safe_div(num, den):
-            try:
-                if num is None or den is None:
-                    return None
-                if float(den) == 0.0:
-                    return None
-                return float(num) / float(den)
-            except Exception:
-                return None
-
-        a50 = push["plus50_token1"]
-        a100 = push["plus100_token1"]
-        a200 = push["plus200_token1"]
-
-        if U1 is not None:
-            plus50_usd_value = float(a50 * U1)
-            plus100_usd_value = float(a100 * U1)
-            plus200_usd_value = float(a200 * U1)
-        else:
-            plus50_usd_value = plus100_usd_value = plus200_usd_value = None
-
-        marketcap_val = marketcap_usd if marketcap_usd is not None else None
-        score50 = safe_div(marketcap_val, plus50_usd_value)
-        score100 = safe_div(marketcap_val, plus100_usd_value)
-        score200 = safe_div(marketcap_val, plus200_usd_value)
-
-        def usd_fmt(x):
-            return format_usd(x) if x is not None else "n.d."
-
-        plus50_disp = f"{decfmt(a50)} {push['token1_symbol']} | {usd_fmt(plus50_usd_value)}"
-        plus100_disp = f"{decfmt(a100)} {push['token1_symbol']} | {usd_fmt(plus100_usd_value)}"
-        plus200_disp = f"{decfmt(a200)} {push['token1_symbol']} | {usd_fmt(plus200_usd_value)}"
-
+        # Salva riga risultato (anche se DeFi fallisce)
         row = {
             "symbol": symbol,
             "name": name,
             "pair": pair,
             "lp_usd": lp_usd,
             "marketcap_usd": marketcap_usd,
-            "plus50": plus50_disp,
-            "plus100": plus100_disp,
-            "plus200": plus200_disp,
             "plus50_usd_value": plus50_usd_value,
             "plus100_usd_value": plus100_usd_value,
             "plus200_usd_value": plus200_usd_value,
             "score50": score50,
             "score100": score100,
             "score200": score200,
-            "url": ds.get("url") or f"https://dexscreener.com/bsc/{pair}",
+            "url": url,
             "priceUsd": ds.get("priceUsd"),
             "baseToken": ds.get("baseToken") or {},
+            "defi_error": defi_error,
         }
         rows.append(row)
 
-        base_sym2 = (row["baseToken"].get("symbol") or "BASE")
-        price_str = f"{row['priceUsd']:.8f} USD / {base_sym2}" if row["priceUsd"] is not None else "n.d."
-        mc_str = format_usd(row["marketcap_usd"]) if row["marketcap_usd"] is not None else "n.d."
-        lp_str = format_usd(row["lp_usd"])
-        s50_disp = f"{row['score50']:.2f}x" if row.get("score50") is not None else "n.d."
-        s100_disp = f"{row['score100']:.2f}x" if row.get("score100") is not None else "n.d."
-        s200_disp = f"{row['score200']:.2f}x" if row.get("score200") is not None else "n.d."
-
-        msg_coin = (
-            f"💠 <b>{htmlesc(symbol)}</b> — {htmlesc(name)}\n"
-            f"Market Cap: <b>{mc_str}</b>\n"
-            f"Liquidity: <b>{lp_str}</b>\n"
-            f"Price: <b>{price_str}</b>\n"
-            f"Address: <a href=\"{row['url']}\">{row['pair']}</a>\n"
-            f"<code>{row['pair']}</code>\n\n"
-            f"<b>Token1</b>: {htmlesc(push['token1_symbol'])}\n"
-            f"+50%: {htmlesc(plus50_disp)}\n"
-            f"+100%: {htmlesc(plus100_disp)}\n"
-            f"+200%: {htmlesc(plus200_disp)}\n\n"
-            f"SCORE50: <b>{s50_disp}</b> | SCORE100: <b>{s100_disp}</b> | SCORE200: <b>{s200_disp}</b>"
+        # Scrivi messaggio per coin (sempre)
+        msg_coin = build_coin_message_html(
+            symbol=symbol,
+            name=name,
+            pair=pair,
+            url=url,
+            mc_usd=marketcap_usd,
+            lp_usd=lp_usd,
+            ds=ds,
+            push=push,
+            plus50_usd_value=plus50_usd_value,
+            plus100_usd_value=plus100_usd_value,
+            plus200_usd_value=plus200_usd_value,
+            score50=score50,
+            score100=score100,
+            score200=score200,
+            u1=u1,
+            error=defi_error,
         )
         out_coin = tel_dir / f"coin_{idx:03d}_{symbol}.html"
         out_coin.write_text(msg_coin, encoding="utf-8")
@@ -815,45 +951,21 @@ def main():
     except Exception:
         log("WARN: impossibile scrivere state/results.json")
 
-    # Costruisci report HTML riassuntivo per telegram (un solo file)
-    lines = []
-    lines.append("📌 <b>TOP Screener + DeFi</b>\n")
-
+    # Messaggio riassuntivo: SOLO tabella con nomi coin (Telegram-friendly)
+    # Niente più “TOP Screener + DeFi” dettagliato.
+    summary_rows = []
     for i, r in enumerate(rows_sorted, start=1):
-        sym = r.get("symbol") or "?"
-        name = r.get("name") or ""
-        pair = r.get("pair") or ""
-        url = r.get("url") or f"https://dexscreener.com/bsc/{pair}"
-        mc = r.get("marketcap_usd")
-        lp = r.get("lp_usd")
+        sym = (r.get("symbol") or "?").strip()
+        nm = (r.get("name") or "").strip()
+        # mantieni corto per non superare limiti messaggi
+        summary_rows.append([str(i).rjust(2), truncate(sym, 10), truncate(nm, 32)])
 
-        mc_str = format_usd(mc) if mc is not None else "n.d."
-        lp_str = format_usd(lp) if lp is not None else "n.d."
+    table_txt = build_pre_table(summary_rows, headers=["#", "SYMBOL", "NAME"])
 
-        s50 = r.get("score50")
-        s100 = r.get("score100")
-        s200 = r.get("score200")
-
-        s50_str = f"{s50:.2f}x" if isinstance(s50, (int, float)) else "n.d."
-        s100_str = f"{s100:.2f}x" if isinstance(s100, (int, float)) else "n.d."
-        s200_str = f"{s200:.2f}x" if isinstance(s200, (int, float)) else "n.d."
-
-        plus50 = r.get("plus50") or "n.d."
-        plus100 = r.get("plus100") or "n.d."
-        plus200 = r.get("plus200") or "n.d."
-
-        lines.append(
-            f"#{i} — <b>{htmlesc(sym)}</b> — {htmlesc(name)}\n"
-            f"MC: <b>{mc_str}</b> | LP: <b>{lp_str}</b>\n"
-            f"SCORE50: <b>{htmlesc(s50_str)}</b> | SCORE100: <b>{htmlesc(s100_str)}</b> | SCORE200: <b>{htmlesc(s200_str)}</b>\n"
-            f"+50%: {htmlesc(plus50)}\n"
-            f"+100%: {htmlesc(plus100)}\n"
-            f"+200%: {htmlesc(plus200)}\n"
-            f"Pair: <a href=\"{htmlesc(url)}\">{htmlesc(pair)}</a>\n"
-            f"<code>{htmlesc(pair)}</code>\n"
-        )
-
-    summary_html = "\n".join(lines).strip() + "\n"
+    summary_html = (
+        "📌 <b>TOP Screener — Coin list</b>\n"
+        f"<pre>{htmlesc(table_txt)}</pre>\n"
+    )
 
     tel_dir = Path("state/telegram")
     tel_dir.mkdir(parents=True, exist_ok=True)
@@ -862,8 +974,7 @@ def main():
 
     # anche un txt comodo (facoltativo)
     try:
-        summary_txt = re.sub(r"<[^>]+>", "", summary_html)
-        (tel_dir / "msg_summary.txt").write_text(summary_txt, encoding="utf-8")
+        (tel_dir / "msg_summary.txt").write_text(table_txt + "\n", encoding="utf-8")
         log("Salvato state/telegram/msg_summary.txt")
     except Exception:
         pass
@@ -872,7 +983,6 @@ def main():
     log(f"==> Pipeline completata in {total_dt:.2f}s | risultati={len(rows_sorted)}")
 
     sys.exit(0)
-
 
 
 if __name__ == "__main__":
