@@ -16,17 +16,13 @@ import requests
 """
 Pipeline: screener TOP (DexScreener + CoinGecko) -> analisi DeFi su pool v3 con importi in token1
 e conversione degli importi in USD (≈ USDT) usando priceUsd della *stessa* pair DexScreener.
-Ordina i risultati per SCORE100 = (market cap USD) / (costo +100% in USD), in ordine decrescente.
-Mostra anche SCORE50 e SCORE200.
 
-Modifiche richieste:
-- Migliorato formato messaggi per ogni coin (più pulito, blocco DeFi in tabella monospace, link chiari).
-- Il messaggio riassuntivo "TOP Screener + DeFi" ora è UNA SOLA TABELLA SEMPLICE con i nomi delle coin (e symbol),
-  senza metriche (niente MC/LP/score/+50/+100/+200), in modo Telegram-friendly (usa <pre>, non <table> HTML).
-
-Note:
-- Telegram HTML NON supporta <table>, quindi la “tabella” è resa con <pre>.
-- Ora viene generato anche il file coin_XXX_*.html anche se la parte DeFi fallisce (messaggio di errore per quella coin).
+Aggiornamenti richiesti:
+- LIMITAZIONE MESSAGGI: un (1) messaggio per coin e un (1) recap finale complessivo.
+- MESSAGGI PULITI: nessun dump di errori nei messaggi Telegram; in caso DeFi non disponibile,
+  si mostra solo il blocco Market senza error details.
+- RECAP CLICCABILE: lista semplice con link cliccabili a DexScreener (niente tabelle <pre> nel recap).
+- FORMAT MIGLIORATO: per-coin con header cliccabile, info compatte in monospace, DeFi (se presente) in tabella monospace.
 """
 
 UA = (
@@ -57,6 +53,7 @@ def log_step(i: int, n: int, symbol: str, pair: str, msg: str):
 
 
 def log_err(i: int, n: int, symbol: str, pair: str, msg: str):
+    # Manteniamo il logging su stderr per diagnosi CI, ma NON confluisce nei messaggi Telegram.
     print(f"[{i}/{n}] {symbol} ({pair}) | ERROR: {msg}", file=sys.stderr, flush=True)
 
 
@@ -140,8 +137,9 @@ def build_pre_table(rows_2d, headers=None) -> str:
 
     out_lines = []
     if headers:
-        out_lines.append(fmt_row(all_rows[0]))
-        out_lines.append("-" * min(120, len(out_lines[0])))
+        head = fmt_row(all_rows[0])
+        out_lines.append(head)
+        out_lines.append("-" * min(120, len(head)))
         for r in all_rows[1:]:
             out_lines.append(fmt_row(r))
     else:
@@ -203,7 +201,7 @@ def run_test4_and_capture(
         if refresh_cg:
             cmd += ["--refresh-cg"]
 
-    res = subprocess.run(cmd, capture_output=True, text=True)  # NO check=True
+    res = subprocess.run(cmd, capture_output=True, text=True)
     stdout = ANSI_RE.sub("", res.stdout or "")
     stderr = ANSI_RE.sub("", res.stderr or "")
     return stdout, stderr, int(res.returncode)
@@ -459,10 +457,8 @@ def compute_push_amounts_with_defi(pool: str, rpc_url: str, w3=None):
 def compute_u1_usd_per_token1(ds: dict, push: dict, pair: str, bnb_usd_global: Optional[float]) -> Optional[Decimal]:
     """
     Stima U1 = USD per 1 token1.
-    Strategia identica alla tua, ma isolata in funzione per chiarezza.
     """
     try:
-        # --- Variabili token per fallback esterno ---
         t0_addr = (push["token0_address"] or "").lower()
         t1_addr = (push["token1_address"] or "").lower()
         t0_sym = (push["token0_symbol"] or "").upper().strip()
@@ -554,6 +550,36 @@ def compute_u1_usd_per_token1(ds: dict, push: dict, pair: str, bnb_usd_global: O
         return None
 
 
+# ---------------- message builders ---------------- #
+
+def _market_block(symbol: str, pair: str, url: str, mc_usd, lp_usd, price_usd, base_sym: str, u1: Optional[Decimal]):
+    mc_str = format_usd(mc_usd) if mc_usd is not None else "n.d."
+    lp_str = format_usd(lp_usd) if lp_usd is not None else "n.d."
+    if price_usd is not None:
+        price_str = f"{price_usd:.8f} USD" + (f" / {base_sym.upper().strip()}" if base_sym else "")
+    else:
+        price_str = "n.d."
+
+    u1s = ""
+    if u1 is not None:
+        try:
+            u1s = f"{float(u1):.6f}"
+        except Exception:
+            u1s = str(u1)
+
+    rows = [
+        ["Price",       price_str],
+        ["Market Cap",  mc_str],
+        ["Liquidity",   lp_str],
+    ]
+    if u1s:
+        rows.append(["Token1 est.", f"~{u1s} USD"])
+
+    table_txt = build_pre_table(rows)
+    header = f"🔹 <a href=\"{htmlesc(url)}\"><b>{htmlesc(symbol)}</b></a> — Pool: <code>{htmlesc(pair)}</code>"
+    return header + "\n<pre>" + htmlesc(table_txt) + "</pre>"
+
+
 def build_coin_message_html(
     symbol: str,
     name: str,
@@ -566,64 +592,24 @@ def build_coin_message_html(
     plus50_usd_value: Optional[float],
     plus100_usd_value: Optional[float],
     plus200_usd_value: Optional[float],
-    score50: Optional[float],
-    score100: Optional[float],
-    score200: Optional[float],
     u1: Optional[Decimal],
-    error: Optional[str] = None,
 ) -> str:
     """
-    Messaggio HTML (Telegram-friendly).
+    Messaggio HTML per coin: header cliccabile + blocco Market (sempre).
+    Se DeFi disponibile, aggiunge tabella targets. Niente scores, niente errori.
     """
-    mc_str = format_usd(mc_usd) if mc_usd is not None else "n.d."
-    lp_str = format_usd(lp_usd) if lp_usd is not None else "n.d."
-
     base_sym = ((ds.get("baseToken") or {}).get("symbol") or "").upper().strip()
     priceUsd = ds.get("priceUsd")
 
-    if priceUsd is not None:
-        if base_sym:
-            price_str = f"{priceUsd:.8f} USD / {base_sym}"
-        else:
-            price_str = f"{priceUsd:.8f} USD"
-    else:
-        price_str = "n.d."
-
-    # Header
     lines = []
-    lines.append(f"💠 <b>{htmlesc(symbol)}</b> — {htmlesc(name)}")
-    lines.append(f"<a href=\"{htmlesc(url)}\">DexScreener</a> • Pool: <code>{htmlesc(pair)}</code>")
-    lines.append("")
-    lines.append("<b>Market</b>")
-    lines.append(f"• Market Cap: <b>{htmlesc(mc_str)}</b>")
-    lines.append(f"• Liquidity: <b>{htmlesc(lp_str)}</b>")
-    lines.append(f"• Price: <b>{htmlesc(price_str)}</b>")
+    # Titolo minimale con nome progetto dopo il blocco market
+    lines.append(_market_block(symbol, pair, url, mc_usd, lp_usd, priceUsd, base_sym, u1))
+    if name:
+        lines.append(f"🏷️ <i>{htmlesc(name)}</i>")
 
-    if u1 is not None:
-        try:
-            u1s = f"{float(u1):.6f}"
-        except Exception:
-            u1s = str(u1)
-        lines.append(f"• Token1 est. price: <b>~{htmlesc(u1s)} USD</b>")
-    else:
-        lines.append("• Token1 est. price: <b>n.d.</b>")
-
-    lines.append("")
-
-    if error:
-        # Se DeFi fallisce: messaggio comunque utile
-        lines.append("⚠️ <b>DeFi</b>")
-        lines.append(f"• Stato: <b>ERRORE</b>")
-        lines.append(f"• Dettaglio: <code>{htmlesc(truncate(error, 700))}</code>")
-        lines.append("")
-        lines.append("<b>Scores</b>")
-        lines.append(f"• SCORE50: <b>{htmlesc(fmt_x(score50))}</b> | SCORE100: <b>{htmlesc(fmt_x(score100))}</b> | SCORE200: <b>{htmlesc(fmt_x(score200))}</b>")
-        return "\n".join(lines).strip() + "\n"
-
-    # DeFi block
+    # DeFi (solo se push presente)
     if push is not None:
         token1_sym = (push.get("token1_symbol") or "TOKEN1").upper().strip()
-
         a50 = push.get("plus50_token1", Decimal("0"))
         a100 = push.get("plus100_token1", Decimal("0"))
         a200 = push.get("plus200_token1", Decimal("0"))
@@ -634,26 +620,17 @@ def build_coin_message_html(
             ["+200%", f"{decfmt(a200)} {token1_sym}", usd_fmt(plus200_usd_value)],
         ]
         table_txt = build_pre_table(t_rows, headers=["Target", "Token1 needed", "USD est."])
-
         lines.append("📈 <b>DeFi targets</b>")
         lines.append(f"<pre>{htmlesc(table_txt)}</pre>")
-        lines.append("")
 
-    # Scores
-    lines.append("<b>Scores</b>")
-    lines.append(
-        f"• SCORE50: <b>{htmlesc(fmt_x(score50))}</b> | "
-        f"SCORE100: <b>{htmlesc(fmt_x(score100))}</b> | "
-        f"SCORE200: <b>{htmlesc(fmt_x(score200))}</b>"
-    )
-
+    # Nessuna sezione errori/scores
     return "\n".join(lines).strip() + "\n"
 
 
 # ---------------- main ---------------- #
 
 def main():
-    ap = argparse.ArgumentParser(description="Pipeline: screener TOP (con pool) -> analisi DeFi (+50, +100%, +200%)")
+    ap = argparse.ArgumentParser(description="Pipeline: screener TOP -> analisi DeFi (+50, +100%, +200%)")
     ap.add_argument("--rpc", default="https://bsc-dataseed.binance.org")
     ap.add_argument("--python-bin", default=sys.executable)
 
@@ -676,7 +653,7 @@ def main():
 
     ap.add_argument("--ttl-perps", type=int, default=None)
     ap.add_argument("--ttl-cg", type=int, default=None)
-    ap.add_argument("--ttl-cg-list", type=int, default=None, help="TTL (sec) della coins list CoinGecko usata da test4.py e dal fallback marketcap in questo script.")
+    ap.add_argument("--ttl-cg-list", type=int, default=None, help="TTL (sec) della coins list CoinGecko.")
     ap.add_argument("--refresh-perps", action="store_true")
     ap.add_argument("--refresh-cg", action="store_true")
     ap.add_argument("--refresh-all", action="store_true")
@@ -712,43 +689,21 @@ def main():
         print(stderr, file=sys.stderr)
         print(">> ===================================")
 
-    # Se test4 fallisce davvero, errore hard
+    # Errori hard: esci (nessun messaggio Telegram rumoroso)
     if rc not in (0, 2):
         log_err(0, 0, "-", "-", f"Lancio test4.py fallito (exit={rc})")
-        if stdout:
-            print(stdout)
-        if stderr:
-            print(stderr, file=sys.stderr)
         sys.exit(1)
 
-    # Se test4 esce con 2 (eventuale warning), gestisci come "no TOP"
-    if rc == 2:
-        tel_dir = Path("state/telegram")
-        tel_dir.mkdir(parents=True, exist_ok=True)
-        diag = (stderr or "").strip()
-        msg = "⚠️ Nessuna coin TOP trovata (test4.py exit=2)."
-        if diag:
-            msg += "\n\n<pre>" + htmlesc(diag[-3500:]) + "</pre>"
-        (tel_dir / "msg_summary.html").write_text(msg, encoding="utf-8")
-        sys.exit(2)
-
-    coins = parse_top_only(stdout)
+    # Se test4 esce con 2 o nessun TOP: recap minimale "vuoto"
+    coins = [] if rc == 2 else parse_top_only(stdout)
     if not coins:
         tel_dir = Path("state/telegram")
         tel_dir.mkdir(parents=True, exist_ok=True)
-
-        diag = (stderr or "").strip()
-        msg = "⚠️ Nessuna coin in TOP trovata dall'output di test4.py."
-        if diag:
-            msg += "\n\n<pre>" + htmlesc(diag[-3500:]) + "</pre>"
-
-        (tel_dir / "msg_summary.html").write_text(msg, encoding="utf-8")
-
-        log("Nessuna coin in TOP trovata dall'output di test4.py.")
-        if diag:
-            print(diag, file=sys.stderr)
-
-        sys.exit(2)
+        # Recap minimale senza errori
+        summary_html = "📌 <b>TOP Screener — Coin list</b>\n\n<i>Nessuna coin rilevata.</i>\n"
+        (tel_dir / "msg_summary.html").write_text(summary_html, encoding="utf-8")
+        log("Nessuna coin TOP.")
+        sys.exit(0)
 
     if args.limit and args.limit > 0:
         coins = coins[:args.limit]
@@ -756,13 +711,13 @@ def main():
     n = len(coins)
     log(f"==> Trovate {n} coin in TOP. Inizio analisi per-pool...")
 
-    # Esporta lista TOP per altri tool
+    # Esporta lista TOP (per altri tool)
     try:
         import json
         Path("state").mkdir(parents=True, exist_ok=True)
         top_pairs = [{"symbol": x["symbol"], "name": x["name"], "pair": x["pair"]} for x in coins]
         Path("state/top_pairs.json").write_text(json.dumps(top_pairs, ensure_ascii=False), encoding="utf-8")
-        log("Salvato state/top_pairs.json per volume_watch.")
+        log("Salvato state/top_pairs.json")
     except Exception:
         log("WARN: impossibile scrivere state/top_pairs.json")
 
@@ -806,12 +761,9 @@ def main():
             ds_dt = time.perf_counter() - ds_t0
             marketcap_usd = ds.get("marketcap")
             dexId = ds.get("dexId")
-            log_step(
-                idx, n, symbol, pair,
-                f"DexScreener OK in {ds_dt:.2f}s | dexId={dexId} | mcap={format_usd(marketcap_usd) if marketcap_usd else 'n.d.'}"
-            )
+            log_step(idx, n, symbol, pair, f"DexScreener OK in {ds_dt:.2f}s | dexId={dexId} | mcap={format_usd(marketcap_usd) if marketcap_usd else 'n.d.'}")
         except Exception as e:
-            ds = {"marketcap": None, "dexId": None, "priceUsd": None, "baseToken": {}, "quoteToken": {}, "url": None}
+            ds = {"marketcap": None, "dexId": None, "priceUsd": None, "priceNative": None, "baseToken": {}, "quoteToken": {}, "url": None}
             marketcap_usd = None
             log_err(idx, n, symbol, pair, f"DexScreener KO: {e}")
 
@@ -830,10 +782,7 @@ def main():
                     cg_t0 = time.perf_counter()
                     marketcap_usd = fetch_cg_marketcap_usd(coin_id)
                     cg_dt = time.perf_counter() - cg_t0
-                    log_step(
-                        idx, n, symbol, pair,
-                        f"CoinGecko OK in {cg_dt:.2f}s | id={coin_id} | mcap={format_usd(marketcap_usd) if marketcap_usd else 'n.d.'}"
-                    )
+                    log_step(idx, n, symbol, pair, f"CoinGecko OK in {cg_dt:.2f}s | id={coin_id} | mcap={format_usd(marketcap_usd) if marketcap_usd else 'n.d.'}")
                 else:
                     log_step(idx, n, symbol, pair, "CoinGecko: nessun id coerente trovato.")
             except Exception as e:
@@ -844,22 +793,16 @@ def main():
         # 3) DeFi calc
         push = None
         plus50_usd_value = plus100_usd_value = plus200_usd_value = None
-        score50 = score100 = score200 = None
         u1 = None
-        defi_error = None
 
         try:
             log_step(idx, n, symbol, pair, "DeFi: compute +50/+100/+200...")
             d0 = time.perf_counter()
             push = compute_push_amounts_with_defi(pair, args.rpc, w3=w3_shared)
             ddt = time.perf_counter() - d0
+            log_step(idx, n, symbol, pair, f"DeFi OK in {ddt:.2f}s | token1={push['token1_symbol']} | +50={push['plus50_str']} | +100={push['plus100_str']} | +200={push['plus200_str']}")
 
-            log_step(
-                idx, n, symbol, pair,
-                f"DeFi OK in {ddt:.2f}s | token1={push['token1_symbol']} | +50={push['plus50_str']} | +100={push['plus100_str']} | +200={push['plus200_str']}"
-            )
-
-            # 4) Conversione in USD via U1
+            # Conversione in USD via U1
             u1 = compute_u1_usd_per_token1(ds, push, pair, bnb_usd_global)
 
             a50 = push["plus50_token1"]
@@ -870,17 +813,11 @@ def main():
                 plus50_usd_value = float(a50 * u1)
                 plus100_usd_value = float(a100 * u1)
                 plus200_usd_value = float(a200 * u1)
-
-            marketcap_val = marketcap_usd if marketcap_usd is not None else None
-            score50 = safe_div(marketcap_val, plus50_usd_value)
-            score100 = safe_div(marketcap_val, plus100_usd_value)
-            score200 = safe_div(marketcap_val, plus200_usd_value)
-
         except Exception as e:
-            defi_error = str(e)
+            # Nessun dettaglio di errore nei messaggi Telegram.
             if args.per_pool_debug:
-                log_err(idx, n, symbol, pair, f"DEBUG ERR: {defi_error}")
-            log_step(idx, n, symbol, pair, f"DeFi KO: {truncate(defi_error, 200)}")
+                log_err(idx, n, symbol, pair, f"DEBUG ERR: {e}")
+            log_step(idx, n, symbol, pair, f"DeFi KO (silente)")
 
         # Salva riga risultato (anche se DeFi fallisce)
         row = {
@@ -892,17 +829,14 @@ def main():
             "plus50_usd_value": plus50_usd_value,
             "plus100_usd_value": plus100_usd_value,
             "plus200_usd_value": plus200_usd_value,
-            "score50": score50,
-            "score100": score100,
-            "score200": score200,
             "url": url,
             "priceUsd": ds.get("priceUsd"),
             "baseToken": ds.get("baseToken") or {},
-            "defi_error": defi_error,
+            # nessun campo 'defi_error' nel dataset finale per evitare usi indesiderati nei messaggi
         }
         rows.append(row)
 
-        # Scrivi messaggio per coin (sempre)
+        # Messaggio per coin (UNO per coin, sempre)
         msg_coin = build_coin_message_html(
             symbol=symbol,
             name=name,
@@ -915,11 +849,7 @@ def main():
             plus50_usd_value=plus50_usd_value,
             plus100_usd_value=plus100_usd_value,
             plus200_usd_value=plus200_usd_value,
-            score50=score50,
-            score100=score100,
-            score200=score200,
             u1=u1,
-            error=defi_error,
         )
         out_coin = tel_dir / f"coin_{idx:03d}_{symbol}.html"
         out_coin.write_text(msg_coin, encoding="utf-8")
@@ -933,13 +863,14 @@ def main():
 
     # ---------------- sorting & summary ---------------- #
 
-    def key_score100(r):
-        v = r.get("score100")
+    def key_score100_like(r):
+        # Ordinamento “migliori” in cima, se disponibili i costi (usa +100 come metrica proxy).
+        v = safe_div(r.get("marketcap_usd"), r.get("plus100_usd_value"))
         return (-v) if isinstance(v, (int, float)) else float("inf")
 
-    rows_sorted = sorted(rows, key=key_score100)
+    rows_sorted = sorted(rows, key=key_score100_like)
 
-    # salva report JSON
+    # salva report JSON (opzionale, utile per debug/archiviazione)
     try:
         import json
         Path("state").mkdir(parents=True, exist_ok=True)
@@ -951,33 +882,22 @@ def main():
     except Exception:
         log("WARN: impossibile scrivere state/results.json")
 
-    # Messaggio riassuntivo: SOLO tabella con nomi coin (Telegram-friendly)
-    # Niente più “TOP Screener + DeFi” dettagliato.
-    summary_rows = []
+    # RECAP: lista semplice con link cliccabili (niente <pre>, niente metriche, niente errori)
+    lines = ["📌 <b>TOP Screener — Coin list</b>", ""]
     for i, r in enumerate(rows_sorted, start=1):
         sym = (r.get("symbol") or "?").strip()
         nm = (r.get("name") or "").strip()
-        # mantieni corto per non superare limiti messaggi
-        summary_rows.append([str(i).rjust(2), truncate(sym, 10), truncate(nm, 32)])
+        url = r.get("url") or f"https://dexscreener.com/bsc/{r.get('pair','')}"
+        # ogni riga: indice + link cliccabile con SYMBOL — Name
+        line = f"{i:02d}. <a href=\"{htmlesc(url)}\"><b>{htmlesc(sym)}</b> — {htmlesc(truncate(nm, 48))}</a>"
+        lines.append(line)
 
-    table_txt = build_pre_table(summary_rows, headers=["#", "SYMBOL", "NAME"])
-
-    summary_html = (
-        "📌 <b>TOP Screener — Coin list</b>\n"
-        f"<pre>{htmlesc(table_txt)}</pre>\n"
-    )
+    summary_html = "\n".join(lines).strip() + "\n"
 
     tel_dir = Path("state/telegram")
     tel_dir.mkdir(parents=True, exist_ok=True)
     (tel_dir / "msg_summary.html").write_text(summary_html, encoding="utf-8")
     log("Salvato state/telegram/msg_summary.html")
-
-    # anche un txt comodo (facoltativo)
-    try:
-        (tel_dir / "msg_summary.txt").write_text(table_txt + "\n", encoding="utf-8")
-        log("Salvato state/telegram/msg_summary.txt")
-    except Exception:
-        pass
 
     total_dt = time.perf_counter() - start_all
     log(f"==> Pipeline completata in {total_dt:.2f}s | risultati={len(rows_sorted)}")
