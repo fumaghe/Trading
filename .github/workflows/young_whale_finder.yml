@@ -29,6 +29,9 @@ jobs:
       YWF_RPS: "2"
       YWF_BALANCE_TTL: "0"          # sempre bilanci freschi
 
+      # NUOVO: soglia balance USD per results (script aggiornato)
+      YWF_NAME_MIN_BAL_USD: "1500"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -73,7 +76,7 @@ jobs:
             echo "Running ${SYM} (${ADDR})"
             CMD="python young_whale_finder.py \
               --token ${ADDR} \
-              --minutes 120 \
+              --minutes 50 \
               --min-usd 100 \
               --young-days 7"
             echo "CMD: $CMD"
@@ -114,7 +117,7 @@ jobs:
           import os, json, html, glob, time
           from datetime import datetime, timezone
 
-          # SOGLIA: non inviare se balance_usd < 3000
+          # SOGLIA: non inviare se balance_usd < 1500
           THRESHOLD = 1500.0
 
           def fmt_money(v):
@@ -272,7 +275,7 @@ jobs:
           set -e
           mkdir -p history
           python - << 'PY'
-          import os, json, glob, time
+          import os, json, glob
           from datetime import datetime, timezone
 
           files = sorted(glob.glob("out/out-*.json"))
