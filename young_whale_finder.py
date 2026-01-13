@@ -62,7 +62,7 @@ log = logging.getLogger("ywf")
 # -------------------- Config -------------------- #
 
 # Moralis
-MORALIS_API_KEY = os.getenv("MORALIS_API_KEY", "").strip() or "CHANGE_ME"
+MORALIS_API_KEY = os.getenv("MORALIS_API_KEY", "").strip() or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6Ijg3YTE1YmJmLWY5NmItNDY5ZS04MWViLTUyMWExNWUxNWU2NSIsIm9yZ0lkIjoiMzU5OTMzIiwidXNlcklkIjoiMzY5OTEzIiwidHlwZUlkIjoiYjVkN2Q2YjctNGM4ZC00NjRhLWIyNGMtMjU2MTk0NzJmNGE5IiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NjI1MzAzMDUsImV4cCI6NDkxODI5MDMwNX0.YPGGVEguNqhoy-5bE0k-3BBhMdvKNWxorjh4HFdgh1I"
 MORALIS_BASE = "https://deep-index.moralis.io/api/v2.2"
 
 # DexScreener
