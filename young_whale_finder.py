@@ -71,6 +71,7 @@ DEXSCREENER_TOKEN = "https://api.dexscreener.com/latest/dex/tokens/{address}"
 
 CHAIN = "bsc"
 
+
 # Defaults
 YOUNG_DAYS_DEFAULT = int(os.getenv("YWF_YOUNG_DAYS", "3"))
 RPS = float(os.getenv("YWF_RPS", "2"))
