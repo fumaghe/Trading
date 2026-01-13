@@ -183,7 +183,7 @@ jobs:
                   zerion_url = f"https://debank.com/profile/{addr}"
                   addr_short = short_addr(addr)
 
-                  new_badge = "🆕 " if is_new else ""
+                  new_badge = "🚨🆕 " if is_new else ""
                   header = f'{new_badge}🐋 <a href="{dex_url}"><u>{html.escape(sym)}</u></a> — <b>{html.escape(user)}</b>'
                   line_buys = f"🪙 Acquisti nella finestra: <b>{fmt_money(bought)}</b>"
                   line_bal = f"Balance USD: <b>{fmt_money(balu)}</b>"
