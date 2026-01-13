@@ -8,6 +8,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: ywf-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   run-ywf:
     runs-on: ubuntu-latest
@@ -19,18 +23,21 @@ jobs:
 
       # Opzionali:
       YWF_LOG: info
-      YWF_FAST: "1"                 # limiti dinamici ON
+      YWF_FAST: "1"
       YWF_TOPK: "50"
       YWF_TARGET_WALLETS: "12"
       YWF_BUDGET_CALLS: "60"
-      YWF_NO_DTB: "1"               # timestamp-only
+      YWF_NO_DTB: "1"
       YWF_CACHE: "ywf_cache.json"
       YWF_WINDOW_SLACK: "90"
       YWF_RPS: "2"
-      YWF_BALANCE_TTL: "0"          # sempre bilanci freschi
+      YWF_BALANCE_TTL: "0"
 
-      # NUOVO: soglia balance USD per results (script aggiornato)
+      # Soglia balance USD per results (script)
       YWF_NAME_MIN_BAL_USD: "1500"
+
+      # NUOVO: DB persistente wallet (nome + età + seen/new)
+      YWF_WALLET_DB: "wallet_db.json"
 
     steps:
       - name: Checkout
@@ -70,7 +77,6 @@ jobs:
           mkdir -p out
 
           EXIT_CODE=0
-          # ordine fisso richiesto
           for SYM in IRYS AIO B2 RIVER BLESS STO; do
             ADDR="${TOKENS[$SYM]}"
             echo "Running ${SYM} (${ADDR})"
@@ -84,21 +90,18 @@ jobs:
             OUTJSON="out/out-${SYM}.json"
             ERRFILE="out/err-${SYM}.txt"
 
-            # stdout -> JSON, stderr -> log
             bash -lc "$CMD" 1>"$OUTJSON" 2>"$ERRFILE" || EXIT_CODE=$?
 
-            # Sanitize
             tr -d '\000' < "$OUTJSON" > "out/tmp-${SYM}.json" || true
             mv "out/tmp-${SYM}.json" "$OUTJSON"
             tr -d '\000' < "$ERRFILE" > "out/err-${SYM}.san.txt" || true
             mv "out/err-${SYM}.san.txt" "$ERRFILE"
 
-            # Debug: conteggio results + stats + prime righe stderr
             if command -v jq >/dev/null 2>&1; then
               COUNT=$(jq -r '(.results|length) // 0' "$OUTJSON" 2>/dev/null || echo 0)
               echo "[DEBUG] ${SYM}: results=$COUNT"
               echo -n "[DEBUG] ${SYM}: stats="
-              jq -r '" kept=\(.stats.wallet_tenuti // 0) buys_ge_min=\(.stats.buys_ge_min_usd // 0) wallets_seen=\(.stats.wallet_unici_ge_min_usd // 0)"' "$OUTJSON" 2>/dev/null || true
+              jq -r '" kept=\(.stats.wallet_tenuti // 0) new=\(.stats.wallet_new_in_results // 0) buys_ge_min=\(.stats.buys_ge_min_usd // 0) wallets_seen=\(.stats.wallet_unici_ge_min_usd // 0)"' "$OUTJSON" 2>/dev/null || true
             else
               echo "[WARN] jq non disponibile; salto debug JSON."
             fi
@@ -117,7 +120,6 @@ jobs:
           import os, json, html, glob, time
           from datetime import datetime, timezone
 
-          # SOGLIA: non inviare se balance_usd < 1500
           THRESHOLD = 1500.0
 
           def fmt_money(v):
@@ -150,7 +152,6 @@ jobs:
                   print(f"[DEBUG] {sym}: nessun results nel JSON {f}")
                   continue
 
-              # Link DexScreener: preferisci pair; fallback alla pagina token
               if pair:
                   dex_url = f"https://dexscreener.com/bsc/{pair}"
               else:
@@ -160,8 +161,8 @@ jobs:
                   user = r.get("user_name") or "Utente"
                   addr = (r.get("address","") or "").strip()
                   balu = r.get("balance_usd")
+                  is_new = bool(r.get("is_new", False))
 
-                  # --- FILTRO BILANCIO ---
                   try:
                       balf = float(balu)
                   except Exception:
@@ -169,11 +170,9 @@ jobs:
                   if balf is None or balf < THRESHOLD:
                       print(f"[DEBUG] skip {sym}: {addr} balance_usd={balu} < {THRESHOLD}")
                       continue
-                  # ------------------------
 
                   bought = r.get("sum_buys_usd_window")
 
-                  # Età wallet
                   first_ts = r.get("first_tx_ts")
                   age_line = ""
                   if isinstance(first_ts, (int, float)) and first_ts > 0:
@@ -181,18 +180,16 @@ jobs:
                       iso_date = datetime.fromtimestamp(first_ts, tz=timezone.utc).strftime("%Y-%m-%d")
                       age_line = f"<i>Wallet creato il {iso_date} — {days} giorni</i>"
 
-                  # Link Zerion (o DeBank / simile)
                   zerion_url = f"https://debank.com/profile/{addr}"
                   addr_short = short_addr(addr)
 
-                  # Messaggio HTML:
-                  header = f'🐋 <a href="{dex_url}"><u>{html.escape(sym)}</u></a> — <b>{html.escape(user)}</b>'
+                  new_badge = "🆕 " if is_new else ""
+                  header = f'{new_badge}🐋 <a href="{dex_url}"><u>{html.escape(sym)}</u></a> — <b>{html.escape(user)}</b>'
                   line_buys = f"🪙 Acquisti nella finestra: <b>{fmt_money(bought)}</b>"
                   line_bal = f"Balance USD: <b>{fmt_money(balu)}</b>"
                   line_addr = f"Wallet: {html.escape(addr_short)}"
                   line_zerion = f'<a href="{zerion_url}">🏛️ Apri Wallet</a>'
 
-                  # ORDINE: buys -> balance -> wallet -> (age) -> Zerion
                   pieces = [header, line_buys, line_bal, line_addr]
                   if age_line:
                       pieces.append(age_line)
@@ -204,11 +201,9 @@ jobs:
                   out_path = os.path.join("out", "msgs", base + ".html")
                   meta_path = os.path.join("out", "msgs", base + ".meta.json")
 
-                  # Salva testo del messaggio
                   with open(out_path, "w", encoding="utf-8") as m:
                       m.write(txt)
 
-                  # Salva meta con address completo per CopyTextButton
                   meta = {
                       "symbol": sym,
                       "token": token_addr,
@@ -243,9 +238,6 @@ jobs:
             META="${BASE}.meta.json"
 
             if [ -f "$META" ]; then
-              # Costruisci inline keyboard con CopyTextButton:
-              # testo = "📋 0x1234...abcd" (addr_short)
-              # copy_text.text = address completo
               REPLY_MARKUP=$(jq -c '{inline_keyboard: [[{text: ("📋 " + (.addr_short // .address)), copy_text: {text: .address}}]]}' "$META")
 
               curl -sS -X POST "$API" \
@@ -256,7 +248,6 @@ jobs:
                 --data-urlencode "reply_markup=$REPLY_MARKUP" \
               || echo "Telegram send failed ($f)"
             else
-              # Fallback senza bottone (se per qualche motivo manca il meta)
               curl -sS -X POST "$API" \
                 --data-urlencode "chat_id=${TG_CHAT_ID}" \
                 --data-urlencode "text=$TEXT" \
@@ -268,8 +259,7 @@ jobs:
             sleep 0.6
           done
 
-      # Persisti log compatti per il recap 6h
-      - name: Persist compact logs for recap (commit to repo)
+      - name: Persist compact logs + wallet DB (commit to repo)
         shell: bash
         run: |
           set -e
@@ -284,7 +274,6 @@ jobs:
           ts_compact = now.strftime("%Y%m%dT%H%M%SZ")
 
           for f in files:
-              # 1) Skippa file vuoti o illeggibili
               try:
                   if os.path.getsize(f) == 0:
                       print(f"[DEBUG] skip {f}: empty file")
@@ -295,8 +284,6 @@ jobs:
                   print(f"[DEBUG] skip {f}: {e}")
                   continue
 
-              # 2) Se in futuro decidiamo di emettere JSON di errore dal finder,
-              #    li riconosciamo e non li salviamo in history
               if isinstance(j, dict) and j.get("error"):
                   print(f"[DEBUG] skip {f}: error field={j.get('error')}")
                   continue
@@ -330,8 +317,14 @@ jobs:
 
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # evita conflitti banali
+          git pull --rebase || true
+
           git add history || true
-          git commit -m "chore: persist YWF compact logs $(date -u +'%Y-%m-%dT%H:%MZ')" || echo "No changes to commit"
+          git add wallet_db.json || true
+
+          git commit -m "chore: persist YWF logs + wallet_db $(date -u +'%Y-%m-%dT%H:%MZ')" || echo "No changes to commit"
           git push || echo "Nothing to push"
 
       - name: Upload artifacts (logs & outputs)
@@ -344,5 +337,7 @@ jobs:
             out/*.txt
             out/msgs/*.html
             out/msgs/*.meta.json
+            out/msgs/COUNT.txt
             ywf_cache.json
+            wallet_db.json
             history/**/*.json

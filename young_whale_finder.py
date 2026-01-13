@@ -3,16 +3,17 @@
 """
 Young Whale Finder — BSC (Moralis-min, DexScreener-aggregated) — STABLE TOKEN-FIRST
 
-Modifiche principali rispetto alla tua versione:
-- Nessun taglio TOP_K sulla valutazione: valutiamo TUTTI i wallet che hanno comprato >= min_usd nella finestra.
-- Filtro "young" realmente disattivabile: --young-days 0 => NON filtra per età.
-- YWF_FAST default 0 e nessun dynamic-limits che riduca i limiti.
-- Threshold su balance in USD: default 3000 (YWF_NAME_MIN_BAL_USD).
-- Top spenders list separata: YWF_TOP_SPENDERS_N (default 50) solo per agg.top_spenders_all.
+Estensioni (persistenza wallet):
+- Introduce un DB persistente su file (wallet_db.json) per:
+  - nome assegnato stabile per address
+  - first_tx_ts stabile (età wallet) per ridurre chiamate Moralis e non ricalcolare
+  - first_seen/last_seen e seen_count
+- Ogni wallet in results include:
+  - is_new: True se address mai visto prima nel wallet_db
+  - first_seen_ts, last_seen_ts, seen_count (post-update)
 
-Uso:
-  python young_whale_finder.py --token 0x... --minutes 120 --min-usd 100 --young-days 7
-  python young_whale_finder.py --token 0x... --minutes 120 --min-usd 100 --young-days 0   # no filtro young
+Nota:
+- Il vecchio DiskCache (ywf_cache.json) resta, ma la stabilità NOME/ETA' è garantita dal wallet_db persistente.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import sys
 import time
 import random
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 
 import requests
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception
@@ -83,7 +84,7 @@ TOP_K = int(os.getenv("YWF_TOPK", "20"))
 TOP_SPENDERS_N = int(os.getenv("YWF_TOP_SPENDERS_N", "50"))
 TOP_SPENDERS_N = max(10, min(TOP_SPENDERS_N, 500))
 
-# Scansione swap: aumentare per evitare tronchi (early-stop fermerà comunque quando esaurisce la finestra)
+# Scansione swap
 MAX_SWAPS = int(os.getenv("YWF_MAX_SWAPS", "50000"))
 
 # Moralis budget chiamate
@@ -91,14 +92,13 @@ BUDGET_CALLS = int(os.getenv("YWF_BUDGET_CALLS", "200"))
 
 WINDOW_SLACK_SEC = int(os.getenv("YWF_WINDOW_SLACK", "90"))
 
-# Fast mode: default OFF, e anche se attivata non deve ridurre MAX_SWAPS in modo aggressivo
+# Fast mode: default OFF
 if os.getenv("YWF_FAST", "0") == "1":
-    # Non riduciamo MAX_SWAPS a 1200 perché rischia di perdere wallet in finestre larghe/alta attività
     TOP_K = max(8, min(TOP_K, 50))
 
 SKIP_DATE_TO_BLOCK = os.getenv("YWF_NO_DTB", "1") == "1"
 
-# Cache
+# Cache (non persistente per forza tra run; dipende da workflow)
 CACHE_PATH = os.getenv("YWF_CACHE", "ywf_cache.json")
 TTL_BLOCK = 600
 TTL_PRICE_MORALIS = 120
@@ -115,7 +115,153 @@ NAME_MIN_BAL_USD = float(os.getenv("YWF_NAME_MIN_BAL_USD", "1500"))
 # Se vuoi loggare il motivo di scarto dei singoli wallet (solo in DEBUG)
 LOG_REASONS = os.getenv("YWF_LOG_REASONS", "0") == "1"
 
-# -------------------- Utils & Cache -------------------- #
+# Wallet DB persistente (da committare nel repo via GH Actions)
+WALLET_DB_PATH = os.getenv("YWF_WALLET_DB", "wallet_db.json")
+
+
+# -------------------- Utils -------------------- #
+
+def normalize_addr(addr: str) -> str:
+    a = (addr or "").strip()
+    return a.lower()
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+# -------------------- Wallet Registry (persistente) -------------------- #
+
+class WalletRegistry:
+    """
+    File JSON persistente per stabilizzare:
+      - name assegnato
+      - first_tx_ts (età wallet)
+      - first_seen / last_seen / count
+    """
+    def __init__(self, path: str):
+        self.path = path
+        self.data: Dict[str, Any] = {"version": 1, "updated_at": None, "wallets": {}}
+        self._load()
+
+    def _load(self):
+        try:
+            if os.path.exists(self.path):
+                with open(self.path, "r", encoding="utf-8") as f:
+                    j = json.load(f)
+                if isinstance(j, dict):
+                    # migrazioni soft:
+                    # - se manca wallets ma sembra già un mapping addr->rec, lo importiamo
+                    if "wallets" not in j and any(k.startswith("0x") for k in j.keys()):
+                        wallets = {}
+                        for k, v in j.items():
+                            nk = normalize_addr(k)
+                            if isinstance(v, str):
+                                wallets[nk] = {"name": v}
+                            elif isinstance(v, dict):
+                                wallets[nk] = v
+                            else:
+                                wallets[nk] = {}
+                        self.data["wallets"] = wallets
+                        self.data["updated_at"] = utc_now_iso()
+                    else:
+                        self.data.update(j)
+                        if "wallets" not in self.data or not isinstance(self.data["wallets"], dict):
+                            self.data["wallets"] = {}
+        except Exception as e:
+            log.warning(f"Wallet DB load failed ({e}); starting empty.")
+            self.data = {"version": 1, "updated_at": None, "wallets": {}}
+
+    @property
+    def wallets(self) -> Dict[str, dict]:
+        w = self.data.get("wallets")
+        if not isinstance(w, dict):
+            self.data["wallets"] = {}
+        return self.data["wallets"]
+
+    def get(self, addr: str) -> Optional[dict]:
+        return self.wallets.get(normalize_addr(addr))
+
+    def upsert(self, addr: str, patch: dict):
+        a = normalize_addr(addr)
+        rec = self.wallets.get(a) or {}
+        if not isinstance(rec, dict):
+            rec = {}
+        rec.update({k: v for k, v in patch.items() if v is not None})
+        self.wallets[a] = rec
+
+    def used_names(self) -> set:
+        out = set()
+        for rec in self.wallets.values():
+            if isinstance(rec, dict):
+                n = rec.get("name")
+                if isinstance(n, str) and n.strip():
+                    out.add(n.strip())
+        return out
+
+    def mark_seen(
+        self,
+        addr: str,
+        now_ts: int,
+        symbol: Optional[str] = None,
+        token: Optional[str] = None,
+        first_tx_ts: Optional[int] = None,
+        balance_usd: Optional[float] = None,
+        balance_token: Optional[float] = None,
+        sum_buys_usd_window: Optional[float] = None,
+    ) -> Tuple[bool, dict]:
+        """
+        Ritorna (is_new, rec_post_update)
+        """
+        a = normalize_addr(addr)
+        rec = self.wallets.get(a)
+        is_new = rec is None
+        if rec is None or not isinstance(rec, dict):
+            rec = {"first_seen_ts": now_ts, "seen_count": 0}
+
+        # incrementa contatore
+        try:
+            rec["seen_count"] = int(rec.get("seen_count", 0)) + 1
+        except Exception:
+            rec["seen_count"] = 1
+
+        rec["last_seen_ts"] = now_ts
+
+        if symbol:
+            rec["last_symbol"] = symbol
+        if token:
+            rec["last_token"] = token
+
+        # first_tx_ts: set solo se non già presente
+        if first_tx_ts is not None and not rec.get("first_tx_ts"):
+            rec["first_tx_ts"] = int(first_tx_ts)
+
+        # snapshot last values
+        if balance_usd is not None:
+            rec["last_balance_usd"] = float(balance_usd)
+        if balance_token is not None:
+            rec["last_balance_token"] = float(balance_token)
+        if sum_buys_usd_window is not None:
+            rec["last_sum_buys_usd_window"] = float(sum_buys_usd_window)
+
+        self.wallets[a] = rec
+        return is_new, rec
+
+    def save(self):
+        try:
+            self.data["updated_at"] = utc_now_iso()
+            # scrittura atomica
+            tmp = self.path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
+            os.replace(tmp, self.path)
+        except Exception as e:
+            log.warning(f"Wallet DB save failed: {e}")
+
+
+WALLET_DB = WalletRegistry(WALLET_DB_PATH)
+
+
+# -------------------- Rate limiter -------------------- #
 
 class SimpleRate:
     def __init__(self, rps: float):
@@ -131,6 +277,9 @@ class SimpleRate:
         self.last = time.time()
 
 http_rl = SimpleRate(RPS)
+
+
+# -------------------- Disk Cache (best effort) -------------------- #
 
 class DiskCache:
     def __init__(self, path: str):
@@ -180,9 +329,10 @@ class DiskCache:
         except Exception as e:
             log.warning(f"Cache save failed: {e}")
 
+
 CACHE = DiskCache(CACHE_PATH)
 
-# -------------------- Names helpers -------------------- #
+# -------------------- Names helpers (persistenti via WALLET_DB) -------------------- #
 
 def load_names_list(path: str) -> List[str]:
     try:
@@ -195,27 +345,48 @@ def load_names_list(path: str) -> List[str]:
     return ["Topolino", "Paperino", "Pippo", "Minnie", "Paperina", "Pluto"]
 
 def get_or_assign_name(addr: str, names: List[str]) -> str:
-    current = CACHE.get("names", addr, ttl=None)
-    if current is not None:
-        return str(current)
+    a = normalize_addr(addr)
 
+    # 1) Prima: wallet_db persistente
+    rec = WALLET_DB.get(a)
+    if rec and isinstance(rec, dict):
+        nm = rec.get("name")
+        if isinstance(nm, str) and nm.strip():
+            return nm.strip()
+
+    # 2) Compat: cache names locale (se presente)
+    current = CACHE.get("names", a, ttl=None)
+    if current is not None:
+        nm = str(current).strip()
+        if nm:
+            WALLET_DB.upsert(a, {"name": nm})
+            return nm
+
+    # 3) Assegna nome nuovo unico (globale)
     used = set()
+    used |= WALLET_DB.used_names()
+    # includi anche cache locale (se c'è)
     for v in (CACHE.data.get("names") or {}).values():
-        used.add(v.get("value") if isinstance(v, dict) else v)
+        if isinstance(v, dict):
+            vv = v.get("value")
+            if isinstance(vv, str) and vv.strip():
+                used.add(vv.strip())
 
     available = [n for n in names if n not in used]
     if available:
         candidate = random.SystemRandom().choice(available)
     else:
-        base = random.SystemRandom().choice(names)
+        base = random.SystemRandom().choice(names) if names else "User"
         i = 2
         candidate = base
         while candidate in used:
             candidate = f"{base}{i}"
             i += 1
 
-    CACHE.set("names", addr, candidate)
+    WALLET_DB.upsert(a, {"name": candidate})
+    CACHE.set("names", a, candidate)
     return candidate
+
 
 # -------------------- HTTP & Budget -------------------- #
 
@@ -286,6 +457,7 @@ def http_get(url: str, params: dict | None = None, headers: dict | None = None) 
         raise HttpError(f"GET {url} -> {r.status_code}: {err}", status=r.status_code, retryable=retryable)
     return r.json()
 
+
 # -------------------- Helpers -------------------- #
 
 def _first_key(d: dict, keys: List[str], default=None):
@@ -304,6 +476,7 @@ def _as_float(v) -> Optional[float]:
             return float(str(v).replace(",", ""))
         except Exception:
             return None
+
 
 # -------------------- Moralis cached -------------------- #
 
@@ -357,6 +530,7 @@ def get_token_price_usd_moralis_cached(token: str) -> Optional[float]:
     price = _as_float(_first_key(j, ["usdPrice", "priceUsd", "usd_price", "price_usd"]))
     CACHE.set("price_moralis", token, price)
     return price
+
 
 # -------------------- DexScreener (FREE, aggregato su tutte le pair) -------------------- #
 
@@ -423,6 +597,7 @@ def dexscreener_pick_pair_and_activity(token: str, minutes: int):
     )
     return pair or None, price, buys_b, sells_b, best_liq
 
+
 # -------------------- USD calc -------------------- #
 
 def calc_usd_from_swap(s: dict, price_usd: Optional[float]) -> Optional[float]:
@@ -432,11 +607,15 @@ def calc_usd_from_swap(s: dict, price_usd: Optional[float]) -> Optional[float]:
             return v
     if price_usd is None:
         return None
-    for k in ("tokenAmount", "amountToken", "token_amount", "amount", "value", "toTokenAmount", "buyAmount", "amount0In", "amount1In", "amountIn"):
+    for k in (
+        "tokenAmount", "amountToken", "token_amount", "amount", "value",
+        "toTokenAmount", "buyAmount", "amount0In", "amount1In", "amountIn"
+    ):
         v = _as_float(s.get(k))
         if v is not None:
             return v * float(price_usd)
     return None
+
 
 # -------------------- Swaps iterator (TOKEN-FIRST) -------------------- #
 
@@ -499,15 +678,40 @@ def iterate_swaps_token_first(token: str, from_ts: int, to_ts: int):
         if not cursor:
             return
 
-# -------------------- Enrichment (Moralis) -------------------- #
+
+# -------------------- Enrichment (Moralis + WalletDB) -------------------- #
 
 def get_wallet_first_tx_ts_cached(addr: str) -> Optional[int]:
-    v = CACHE.get("first_tx_ts", addr, ttl=TTL_FIRST_TX)
+    """
+    Ordine lookup:
+      1) WALLET_DB (persistente) -> se presente, usa quello
+      2) CACHE first_tx_ts (best effort)
+      3) Moralis call -> salva in CACHE + WALLET_DB
+    """
+    a = normalize_addr(addr)
+
+    # 1) wallet_db
+    rec = WALLET_DB.get(a)
+    if rec and isinstance(rec, dict):
+        vdb = rec.get("first_tx_ts")
+        if isinstance(vdb, (int, float)) and vdb > 0:
+            return int(vdb)
+
+    # 2) disk cache best-effort
+    v = CACHE.get("first_tx_ts", a, ttl=TTL_FIRST_TX)
     if v is not None:
         global MORALIS_SAVED_BY_CACHE
         MORALIS_SAVED_BY_CACHE += 1
-        return int(v) if v is not None else None
+        try:
+            iv = int(v) if v is not None else None
+        except Exception:
+            iv = None
+        if iv:
+            # sincronizza su wallet_db
+            WALLET_DB.upsert(a, {"first_tx_ts": iv})
+        return iv
 
+    # 3) moralis
     j = moralis_get(
         f"/wallets/{addr}/history",
         params={"chain": CHAIN, "order": "ASC", "limit": 1, "from_date": "1970-01-01T00:00:00Z"},
@@ -521,7 +725,10 @@ def get_wallet_first_tx_ts_cached(addr: str) -> Optional[int]:
         except Exception:
             ts_out = None
 
-    CACHE.set("first_tx_ts", addr, ts_out)
+    CACHE.set("first_tx_ts", a, ts_out)
+    if ts_out is not None:
+        WALLET_DB.upsert(a, {"first_tx_ts": int(ts_out)})
+
     return ts_out
 
 def get_wallet_token_balance_fresh(addr: str, token: str, decimals: int) -> float:
@@ -544,8 +751,9 @@ def get_wallet_token_balance_fresh(addr: str, token: str, decimals: int) -> floa
 
     bal = bal_raw / (10 ** decimals)
     if TTL_BALANCE > 0:
-        CACHE.set("balance", f"{addr}:{token}", bal)
+        CACHE.set("balance", f"{normalize_addr(addr)}:{token.lower()}", bal)
     return bal
+
 
 # -------------------- CLI -------------------- #
 
@@ -558,6 +766,7 @@ def parse_args():
     ap.add_argument("--min-usd", type=float, default=500.0, help="Soglia minima USD per BUY")
     ap.add_argument("--young-days", type=int, default=YOUNG_DAYS_DEFAULT, help="Wallet più giovani di N giorni (0=off)")
     return ap.parse_args()
+
 
 # -------------------- Main -------------------- #
 
@@ -573,10 +782,13 @@ def main():
     log.info(
         f"Start | token={token} minutes={minutes} min_usd={min_usd} young_days={YOUNG_DAYS} "
         f"| MAX_SWAPS={MAX_SWAPS} budget_calls={BUDGET_CALLS} log={LOG_LEVEL.lower()} "
-        f"| MIN_BAL_USD={NAME_MIN_BAL_USD} TOP_SPENDERS_N={TOP_SPENDERS_N}"
+        f"| MIN_BAL_USD={NAME_MIN_BAL_USD} TOP_SPENDERS_N={TOP_SPENDERS_N} "
+        f"| WALLET_DB={WALLET_DB_PATH}"
     )
 
     now = datetime.now(timezone.utc)
+    now_ts = int(now.timestamp())
+
     from_dt = now - timedelta(minutes=minutes)
     from_iso = from_dt.isoformat().replace("+00:00", "Z")
     to_iso = now.isoformat().replace("+00:00", "Z")
@@ -671,7 +883,8 @@ def main():
                     break
                 continue
 
-            buyers_sum_usd[str(wallet)] = buyers_sum_usd.get(str(wallet), 0.0) + float(usd_val)
+            w = normalize_addr(str(wallet))
+            buyers_sum_usd[w] = buyers_sum_usd.get(w, 0.0) + float(usd_val)
 
             if total_swaps >= MAX_SWAPS:
                 log.warning(f"Reached MAX_SWAPS={MAX_SWAPS}, stopping swaps scan.")
@@ -688,7 +901,6 @@ def main():
     buyers_total_usd_all = float(sum(buyers_sum_usd.values()))
     buyers_unique_all = int(len(buyers_sum_usd))
 
-    # Valutiamo TUTTI i wallet (ordinati per spesa solo per priorità)
     wallets_ranked = sorted(buyers_sum_usd.items(), key=lambda kv: kv[1], reverse=True)
     log.info(f"Evaluating first_tx + balance for wallets={len(wallets_ranked)}")
 
@@ -702,8 +914,10 @@ def main():
     skipped_no_price = 0
     budget_exhausted_at = None
     kept_name_map: Dict[str, str] = {}
+    new_wallets_in_results = 0
 
     for addr, sum_usd in wallets_ranked:
+        # addr è già normalizzato (lowercase) dal dict buyers_sum_usd
         try:
             first_ts = get_wallet_first_tx_ts_cached(addr)
         except BudgetExhausted as e:
@@ -743,10 +957,28 @@ def main():
         user_name = get_or_assign_name(addr, names_list)
         kept_name_map[addr] = user_name
 
+        # marca seen su wallet_db + calcola is_new
+        is_new, rec_post = WALLET_DB.mark_seen(
+            addr=addr,
+            now_ts=now_ts,
+            symbol=sym,
+            token=token,
+            first_tx_ts=first_ts,
+            balance_usd=bal_usd,
+            balance_token=bal_tok,
+            sum_buys_usd_window=sum_usd,
+        )
+        if is_new:
+            new_wallets_in_results += 1
+
         results.append(
             {
                 "address": addr,
                 "user_name": user_name,
+                "is_new": bool(is_new),
+                "first_seen_ts": rec_post.get("first_seen_ts"),
+                "last_seen_ts": rec_post.get("last_seen_ts"),
+                "seen_count": rec_post.get("seen_count"),
                 "balance_token": bal_tok,
                 "balance_usd": bal_usd,
                 "first_tx_ts": first_ts,
@@ -757,12 +989,18 @@ def main():
 
     results.sort(key=lambda r: (r["balance_usd"] if r["balance_usd"] is not None else -1), reverse=True)
 
-    # top spender “raw” per finestra, con nome SOLO se validato (>= NAME_MIN_BAL_USD)
+    # top spender “raw” per finestra, con nome se:
+    # - validato in questa run (kept_name_map)
+    # - oppure già presente in WALLET_DB (stabile)
     top_spenders_all = []
     for addr, sum_usd in sorted(buyers_sum_usd.items(), key=lambda kv: kv[1], reverse=True)[:TOP_SPENDERS_N]:
         rec = {"address": addr, "sum_buys_usd_window": float(sum_usd)}
         if addr in kept_name_map:
             rec["user_name"] = kept_name_map[addr]
+        else:
+            dbrec = WALLET_DB.get(addr)
+            if dbrec and isinstance(dbrec, dict) and isinstance(dbrec.get("name"), str) and dbrec.get("name").strip():
+                rec["user_name"] = dbrec["name"].strip()
         top_spenders_all.append(rec)
 
     out = {
@@ -776,18 +1014,20 @@ def main():
         "min_usd": min_usd,
         "young_days": YOUNG_DAYS,
         "min_balance_usd": NAME_MIN_BAL_USD,
-        "from_block": None if SKIP_DATE_TO_BLOCK else (None if "from_blk" not in locals() else from_blk),
-        "to_block": None if SKIP_DATE_TO_BLOCK else (None if "to_blk" not in locals() else to_blk),
+        "from_block": None if SKIP_DATE_TO_BLOCK else from_blk,
+        "to_block": None if SKIP_DATE_TO_BLOCK else to_blk,
         "from_iso": from_iso,
         "to_iso": to_iso,
         "main_pair_hint": main_pair,
+        "wallet_db_path": WALLET_DB_PATH,
         "stats": {
             "total_swaps_scanned": total_swaps,
             "total_swaps_in_window": total_swaps_in_window,
             "buys_ge_min_usd": total_buys_ge_min,
             "wallet_unici_ge_min_usd": len(buyers_sum_usd),
-            "wallet_valutati_topk": len(wallets_ranked),  # compat: ora è TUTTI i wallet valutati
+            "wallet_valutati_topk": len(wallets_ranked),
             "wallet_tenuti": kept,
+            "wallet_new_in_results": new_wallets_in_results,
             "wallet_scartati_old": skipped_old,
             "wallet_scartati_low_balance_usd": skipped_low_bal,
             "wallet_scartati_no_price": skipped_no_price,
@@ -804,7 +1044,9 @@ def main():
         "results": results,
     }
 
+    # salva cache best-effort + wallet_db persistente
     CACHE.save()
+    WALLET_DB.save()
 
     cu_report = {
         "moralis_calls": MORALIS_CALLS,
@@ -813,6 +1055,7 @@ def main():
         "cache_misses": CACHE.misses,
         "elapsed_sec": round(time.time() - t0, 2),
         "budget_calls": BUDGET_CALLS,
+        "wallet_db_size": len(WALLET_DB.wallets),
     }
     log.info(f"CU report: {cu_report}")
     print(json.dumps(out, ensure_ascii=False, indent=2))
