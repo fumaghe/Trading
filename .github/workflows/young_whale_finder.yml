@@ -76,7 +76,7 @@ jobs:
             echo "Running ${SYM} (${ADDR})"
             CMD="python young_whale_finder.py \
               --token ${ADDR} \
-              --minutes 50 \
+              --minutes 120 \
               --min-usd 100 \
               --young-days 7"
             echo "CMD: $CMD"
