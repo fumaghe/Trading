@@ -57,17 +57,11 @@ jobs:
           export LANG=C.UTF-8
 
           declare -A TOKENS
-          # 2  IRYS    Irys
           TOKENS["IRYS"]="0x91152B4Ef635403efBAe860edD0F8c321d7c035d"
-          # 3  AIO     OlaXBT
           TOKENS["AIO"]="0x81a7DA4074b8e0eD51beA40f9dCbDF4d9d4832b4"
-          # 4  B2      BSquared Network
           TOKENS["B2"]="0x783c3f003f172c6Ac5AC700218a357d2D66Ee2a2"
-          # 5  RIVER   River
           TOKENS["RIVER"]="0xdA7AD9dea9397cffdDAE2F8a052B82f1484252B3"
-          #    BLESS
           TOKENS["BLESS"]="0x7C8217517ed4711fe2DECCdFefFE8d906b9Ae11F"
-          # 6  STO     StakeStone
           TOKENS["STO"]="0xdAf1695c41327b61B9b9965Ac6A5843A3198cf07"
 
           mkdir -p out
@@ -79,7 +73,7 @@ jobs:
             echo "Running ${SYM} (${ADDR})"
             CMD="python young_whale_finder.py \
               --token ${ADDR} \
-              --minutes 40 \
+              --minutes 60 \
               --min-usd 100 \
               --young-days 7"
             echo "CMD: $CMD"
