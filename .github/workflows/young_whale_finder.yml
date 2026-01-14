@@ -73,11 +73,12 @@ jobs:
           TOKENS["RIVER"]="0xdA7AD9dea9397cffdDAE2F8a052B82f1484252B3"
           TOKENS["BLESS"]="0x7C8217517ed4711fe2DECCdFefFE8d906b9Ae11F"
           TOKENS["STO"]="0xdAf1695c41327b61B9b9965Ac6A5843A3198cf07"
+          TOKENS["KGEN"]="0xF3d5b4c34Ed623478cc5141861776E6cf7AE3A1E"
 
           mkdir -p out
 
           EXIT_CODE=0
-          for SYM in IRYS AIO B2 RIVER BLESS STO; do
+          for SYM in IRYS AIO B2 RIVER BLESS STO KGEN; do
             ADDR="${TOKENS[$SYM]}"
             echo "Running ${SYM} (${ADDR})"
             CMD="python young_whale_finder.py \
@@ -281,7 +282,7 @@ jobs:
                   with open(f, "r", encoding="utf-8") as fh:
                       j = json.load(fh)
               except Exception as e:
-                  print(f"[DEBUG] skip {f}: {e}")
+                  print(f("[DEBUG] skip {f}: {e}"))
                   continue
 
               if isinstance(j, dict) and j.get("error"):
@@ -341,6 +342,3 @@ jobs:
             ywf_cache.json
             wallet_db.json
             history/**/*.json
-
-
-            
