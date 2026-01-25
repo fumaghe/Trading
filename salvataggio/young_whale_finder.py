@@ -12,11 +12,6 @@ Estensioni (persistenza wallet):
   - is_new: True se address mai visto prima nel wallet_db
   - first_seen_ts, last_seen_ts, seen_count (post-update)
 
-ESTENSIONE TRANSFER (richiesta):
-- Oltre ai BUY per wallet "young/vergini", aggiunge controllo TRANSFER in ingresso
-  per wallet "old/non-vergini" con soglia USD (default 5000).
-- I messaggi Telegram distinguono BUY e TRANSFER tramite campo "trigger".
-
 Nota:
 - Il vecchio DiskCache (ywf_cache.json) resta, ma la stabilità NOME/ETA' è garantita dal wallet_db persistente.
 """
@@ -76,6 +71,7 @@ DEXSCREENER_TOKEN = "https://api.dexscreener.com/latest/dex/tokens/{address}"
 
 CHAIN = "bsc"
 
+
 # Defaults
 YOUNG_DAYS_DEFAULT = int(os.getenv("YWF_YOUNG_DAYS", "3"))
 RPS = float(os.getenv("YWF_RPS", "2"))
@@ -89,13 +85,8 @@ TOP_K = int(os.getenv("YWF_TOPK", "20"))
 TOP_SPENDERS_N = int(os.getenv("YWF_TOP_SPENDERS_N", "50"))
 TOP_SPENDERS_N = max(10, min(TOP_SPENDERS_N, 500))
 
-# Quanti top transfers mostrare in agg.top_transfers_all (solo recap)
-TOP_TRANSFERS_N = int(os.getenv("YWF_TOP_TRANSFERS_N", "50"))
-TOP_TRANSFERS_N = max(10, min(TOP_TRANSFERS_N, 500))
-
-# Scansione swap/transfer
+# Scansione swap
 MAX_SWAPS = int(os.getenv("YWF_MAX_SWAPS", "50000"))
-MAX_TRANSFERS = int(os.getenv("YWF_MAX_TRANSFERS", "50000"))
 
 # Moralis budget chiamate
 BUDGET_CALLS = int(os.getenv("YWF_BUDGET_CALLS", "200"))
@@ -122,9 +113,6 @@ NAMES_FILE = os.getenv("YWF_NAMES_FILE", "nomi.txt")
 # Soglia balance USD per essere considerato "validato" (results + nome)
 NAME_MIN_BAL_USD = float(os.getenv("YWF_NAME_MIN_BAL_USD", "1500"))
 
-# TRANSFER threshold (USD) per wallet old/non-vergini
-TRANSFER_MIN_USD_DEFAULT = float(os.getenv("YWF_TRANSFER_MIN_USD", "5000"))
-
 # Se vuoi loggare il motivo di scarto dei singoli wallet (solo in DEBUG)
 LOG_REASONS = os.getenv("YWF_LOG_REASONS", "0") == "1"
 
@@ -140,31 +128,6 @@ def normalize_addr(addr: str) -> str:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-
-def _first_key(d: dict, keys: List[str], default=None):
-    for k in keys:
-        if k in d and d[k] is not None:
-            return d[k]
-    return default
-
-def _as_float(v) -> Optional[float]:
-    if v is None:
-        return None
-    try:
-        return float(v)
-    except Exception:
-        try:
-            return float(str(v).replace(",", ""))
-        except Exception:
-            return None
-
-def _parse_ts(ts_iso: Any) -> Optional[int]:
-    if not ts_iso:
-        return None
-    try:
-        return int(datetime.fromisoformat(str(ts_iso).replace("Z", "+00:00")).timestamp())
-    except Exception:
-        return None
 
 
 # -------------------- Wallet Registry (persistente) -------------------- #
@@ -246,7 +209,6 @@ class WalletRegistry:
         balance_usd: Optional[float] = None,
         balance_token: Optional[float] = None,
         sum_buys_usd_window: Optional[float] = None,
-        sum_transfers_usd_window: Optional[float] = None,
     ) -> Tuple[bool, dict]:
         """
         Ritorna (is_new, rec_post_update)
@@ -281,8 +243,6 @@ class WalletRegistry:
             rec["last_balance_token"] = float(balance_token)
         if sum_buys_usd_window is not None:
             rec["last_sum_buys_usd_window"] = float(sum_buys_usd_window)
-        if sum_transfers_usd_window is not None:
-            rec["last_sum_transfers_usd_window"] = float(sum_transfers_usd_window)
 
         self.wallets[a] = rec
         return is_new, rec
@@ -499,11 +459,31 @@ def http_get(url: str, params: dict | None = None, headers: dict | None = None) 
     return r.json()
 
 
+# -------------------- Helpers -------------------- #
+
+def _first_key(d: dict, keys: List[str], default=None):
+    for k in keys:
+        if k in d and d[k] is not None:
+            return d[k]
+    return default
+
+def _as_float(v) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except Exception:
+        try:
+            return float(str(v).replace(",", ""))
+        except Exception:
+            return None
+
+
 # -------------------- Moralis cached -------------------- #
 
 def date_to_block_cached(dt_iso: str) -> int:
     k = dt_iso
-    v = CACHE.get("date_to_block", k, ttl=600)
+    v = CACHE.get("date_to_block", k, ttl=TTL_BLOCK)
     if v is not None:
         global MORALIS_SAVED_BY_CACHE
         MORALIS_SAVED_BY_CACHE += 1
@@ -637,36 +617,6 @@ def calc_usd_from_swap(s: dict, price_usd: Optional[float]) -> Optional[float]:
             return v * float(price_usd)
     return None
 
-def calc_usd_from_transfer(t: dict, price_usd: Optional[float], decimals: int) -> Optional[float]:
-    # Moralis può fornire già un valore USD (dipende dall'endpoint / disponibilità)
-    for k in ("value_usd", "valueUsd", "usdValue", "usd_value", "amountUsd", "amount_usd"):
-        v = _as_float(t.get(k))
-        if v is not None:
-            return v
-
-    if price_usd is None:
-        return None
-
-    raw = _first_key(t, ["value", "amount", "token_value", "tokenValue", "value_raw"])
-    if raw is None:
-        # alcuni payload hanno "value_decimal" già normalizzato
-        vd = _as_float(_first_key(t, ["value_decimal", "valueDecimal", "amount_decimal", "amountDecimal"]))
-        if vd is not None:
-            return vd * float(price_usd)
-        return None
-
-    try:
-        ival = int(str(raw))
-        tok_amt = ival / (10 ** int(decimals))
-        return tok_amt * float(price_usd)
-    except Exception:
-        # fallback: prova float diretto
-        fv = _as_float(raw)
-        if fv is None:
-            return None
-        # se fv è già in token (non raw), non possiamo distinguere perfettamente: assumiamo token-normalizzato
-        return fv * float(price_usd)
-
 
 # -------------------- Swaps iterator (TOKEN-FIRST) -------------------- #
 
@@ -697,19 +647,23 @@ def iterate_swaps_token_first(token: str, from_ts: int, to_ts: int):
         any_in_window = False
 
         for s in result:
-            ts = _parse_ts(_first_key(s, ["block_timestamp", "blockTimestamp"]))
-            if ts is not None:
-                ts_ok = (from_ts <= ts <= to_ts)
-                if ts >= from_ts:
+            ts_iso = _first_key(s, ["block_timestamp", "blockTimestamp"])
+            ts_ok = True
+            if ts_iso:
+                try:
+                    ts = int(datetime.fromisoformat(str(ts_iso).replace("Z", "+00:00")).timestamp())
+                    ts_ok = (from_ts <= ts <= to_ts)
+                    if ts >= from_ts:
+                        page_all_before = False
+                    if ts_ok:
+                        any_in_window = True
+                except Exception:
                     page_all_before = False
-                if ts_ok:
                     any_in_window = True
-                if not ts_ok:
-                    continue
-            else:
-                # se non parse, non possiamo early-stop affidabile: trattiamolo come in-window
-                page_all_before = False
-                any_in_window = True
+                    ts_ok = True
+
+            if not ts_ok:
+                continue
 
             yield s
 
@@ -718,68 +672,7 @@ def iterate_swaps_token_first(token: str, from_ts: int, to_ts: int):
         elif page_all_before:
             consecutive_old_pages += 1
             if consecutive_old_pages >= 2:
-                log.info("Early-stop: 2 pagine consecutive tutte < from_ts (swaps).")
-                return
-
-        cursor = j.get("cursor") or None
-        if not cursor:
-            return
-
-
-# -------------------- Transfers iterator (TOKEN-FIRST) -------------------- #
-
-def iterate_transfers_token_first(token: str, from_ts: int, to_ts: int):
-    """
-    Endpoint Moralis:
-      GET /erc20/:address/transfers  (address = token contract)
-    """
-    cursor = None
-    page = 0
-    consecutive_old_pages = 0
-
-    while True:
-        params = {"chain": CHAIN, "order": "DESC", "limit": 100}
-        if cursor:
-            params["cursor"] = cursor
-
-        try:
-            j = moralis_get(f"/erc20/{token}/transfers", params=params)
-        except BudgetExhausted as e:
-            log.warning(str(e))
-            return
-        except Exception as e:
-            log.warning(f"Transfers fetch failed for {token}: {e}")
-            return
-
-        result = j.get("result") or []
-        page += 1
-        log.debug(f"[token page {page}] transfers: {len(result)} (cursor={'yes' if j.get('cursor') else 'no'})")
-
-        page_all_before = True
-        any_in_window = False
-
-        for t in result:
-            ts = _parse_ts(_first_key(t, ["block_timestamp", "blockTimestamp"]))
-            if ts is not None:
-                ts_ok = (from_ts <= ts <= to_ts)
-                if ts >= from_ts:
-                    page_all_before = False
-                if ts_ok:
-                    any_in_window = True
-                if not ts_ok:
-                    continue
-            else:
-                page_all_before = False
-                any_in_window = True
-
-            yield t
-
-        if any_in_window:
-            consecutive_old_pages = 0
-        elif page_all_before:
-            consecutive_old_pages += 1
-            if consecutive_old_pages >= 2:
-                log.info("Early-stop: 2 pagine consecutive tutte < from_ts (transfers).")
+                log.info("Early-stop: 2 pagine consecutive tutte < from_ts.")
                 return
 
         cursor = j.get("cursor") or None
@@ -815,6 +708,7 @@ def get_wallet_first_tx_ts_cached(addr: str) -> Optional[int]:
         except Exception:
             iv = None
         if iv:
+            # sincronizza su wallet_db
             WALLET_DB.upsert(a, {"first_tx_ts": iv})
         return iv
 
@@ -827,7 +721,10 @@ def get_wallet_first_tx_ts_cached(addr: str) -> Optional[int]:
     ts_out = None
     if res:
         ts = _first_key(res[0], ["block_timestamp", "blockTimestamp"])
-        ts_out = _parse_ts(ts)
+        try:
+            ts_out = int(datetime.fromisoformat(str(ts).replace("Z", "+00:00")).timestamp())
+        except Exception:
+            ts_out = None
 
     CACHE.set("first_tx_ts", a, ts_out)
     if ts_out is not None:
@@ -867,11 +764,8 @@ def parse_args():
     )
     ap.add_argument("--token", required=True, help="Token address (BSC)")
     ap.add_argument("--minutes", type=int, default=5, help="Finestra in minuti")
-    ap.add_argument("--min-usd", type=float, default=500.0, help="Soglia minima USD per BUY (wallet young)")
-    ap.add_argument("--transfer-min-usd", type=float, default=TRANSFER_MIN_USD_DEFAULT,
-                    help="Soglia minima USD per TRANSFER in ingresso (wallet old)")
+    ap.add_argument("--min-usd", type=float, default=500.0, help="Soglia minima USD per BUY")
     ap.add_argument("--young-days", type=int, default=YOUNG_DAYS_DEFAULT, help="Wallet più giovani di N giorni (0=off)")
-    ap.add_argument("--disable-transfers", action="store_true", help="Disabilita scansione transfers")
     return ap.parse_args()
 
 
@@ -884,16 +778,13 @@ def main():
     token = args.token
     minutes = max(1, int(args.minutes))
     min_usd = max(0.0, float(args.min_usd))
-    transfer_min_usd = max(0.0, float(args.transfer_min_usd))
     YOUNG_DAYS = max(0, int(args.young_days))
-    transfers_enabled = (not args.disable_transfers) and (transfer_min_usd > 0)
 
     log.info(
-        f"Start | token={token} minutes={minutes} min_usd(BUY)={min_usd} "
-        f"transfer_min_usd(TRANSFER)={transfer_min_usd} transfers_enabled={int(transfers_enabled)} "
-        f"young_days={YOUNG_DAYS} | MAX_SWAPS={MAX_SWAPS} MAX_TRANSFERS={MAX_TRANSFERS} "
-        f"budget_calls={BUDGET_CALLS} log={LOG_LEVEL.lower()} | MIN_BAL_USD={NAME_MIN_BAL_USD} "
-        f"TOP_SPENDERS_N={TOP_SPENDERS_N} TOP_TRANSFERS_N={TOP_TRANSFERS_N} | WALLET_DB={WALLET_DB_PATH}"
+        f"Start | token={token} minutes={minutes} min_usd={min_usd} young_days={YOUNG_DAYS} "
+        f"| MAX_SWAPS={MAX_SWAPS} budget_calls={BUDGET_CALLS} log={LOG_LEVEL.lower()} "
+        f"| MIN_BAL_USD={NAME_MIN_BAL_USD} TOP_SPENDERS_N={TOP_SPENDERS_N} "
+        f"| WALLET_DB={WALLET_DB_PATH}"
     )
 
     now = datetime.now(timezone.utc)
@@ -940,7 +831,6 @@ def main():
         f"Token: {sym} (dec={dec}) | price={price_usd} [{price_source}] | window {from_iso} → {to_iso}"
     )
 
-    # ---------------- BUY scan ----------------
     buyers_sum_usd: Dict[str, float] = {}
     total_swaps = 0
     total_swaps_in_window = 0
@@ -1006,72 +896,17 @@ def main():
 
     log.info(
         f"Swaps scanned={total_swaps} | in_window={total_swaps_in_window} | buys≥min={total_buys_ge_min} "
-        f"| buy_wallets={len(buyers_sum_usd)}"
+        f"| wallets={len(buyers_sum_usd)}"
     )
 
-    # ---------------- TRANSFER scan ----------------
-    transfers_sum_usd: Dict[str, float] = {}
-    transfers_count: Dict[str, int] = {}
-    transfers_max: Dict[str, float] = {}
+    buyers_total_usd_all = float(sum(buyers_sum_usd.values()))
+    buyers_unique_all = int(len(buyers_sum_usd))
 
-    total_transfers = 0
-    total_transfers_in_window = 0
-    total_transfers_ge_min = 0
-    c_transfer_no_to = 0
-    c_transfer_below_min = 0
-
-    if transfers_enabled:
-        it2 = iterate_transfers_token_first(token, from_ts, to_ts)
-        try:
-            for t in it2:
-                total_transfers += 1
-                total_transfers_in_window += 1
-
-                to_addr = _first_key(t, ["to_address", "toAddress", "to", "recipient", "receiver"])
-                if not to_addr:
-                    c_transfer_no_to += 1
-                    if total_transfers >= MAX_TRANSFERS:
-                        break
-                    continue
-
-                usd_val = calc_usd_from_transfer(t, price_usd, dec)
-                if usd_val is None or usd_val < transfer_min_usd:
-                    c_transfer_below_min += 1
-                    if total_transfers >= MAX_TRANSFERS:
-                        break
-                    continue
-
-                total_transfers_ge_min += 1
-
-                w = normalize_addr(str(to_addr))
-                transfers_sum_usd[w] = transfers_sum_usd.get(w, 0.0) + float(usd_val)
-                transfers_count[w] = transfers_count.get(w, 0) + 1
-                prev = transfers_max.get(w, 0.0)
-                if float(usd_val) > prev:
-                    transfers_max[w] = float(usd_val)
-
-                if total_transfers >= MAX_TRANSFERS:
-                    log.warning(f"Reached MAX_TRANSFERS={MAX_TRANSFERS}, stopping transfers scan.")
-                    break
-
-        except BudgetExhausted as e:
-            log.warning(str(e))
-
-        log.info(
-            f"Transfers scanned={total_transfers} | in_window={total_transfers_in_window} | transfers≥min={total_transfers_ge_min} "
-            f"| transfer_wallets={len(transfers_sum_usd)}"
-        )
-    else:
-        log.info("Transfers scan disabilitato (transfer_min_usd=0 o --disable-transfers).")
-
-    # union candidates
-    candidate_wallets = set(buyers_sum_usd.keys()) | set(transfers_sum_usd.keys())
-
-    log.info(f"Evaluating first_tx + balance for candidate_wallets={len(candidate_wallets)}")
+    wallets_ranked = sorted(buyers_sum_usd.items(), key=lambda kv: kv[1], reverse=True)
+    log.info(f"Evaluating first_tx + balance for wallets={len(wallets_ranked)}")
 
     names_list = load_names_list(NAMES_FILE)
-
-    young_cutoff_ts = int(now.timestamp()) - YOUNG_DAYS * 86400 if YOUNG_DAYS > 0 else None
+    young_cutoff_ts = int(now.timestamp()) - YOUNG_DAYS * 86400
 
     results: List[dict] = []
     kept = 0
@@ -1082,15 +917,8 @@ def main():
     kept_name_map: Dict[str, str] = {}
     new_wallets_in_results = 0
 
-    # stats support
-    eligible_buy_candidates = 0
-    eligible_transfer_candidates = 0
-
-    for addr in candidate_wallets:
-        buy_sum = buyers_sum_usd.get(addr, 0.0)
-        transfer_sum = transfers_sum_usd.get(addr, 0.0)
-
-        # enrichment: first tx
+    for addr, sum_usd in wallets_ranked:
+        # addr è già normalizzato (lowercase) dal dict buyers_sum_usd
         try:
             first_ts = get_wallet_first_tx_ts_cached(addr)
         except BudgetExhausted as e:
@@ -1098,35 +926,13 @@ def main():
             log.warning(str(e))
             break
 
-        is_young = None
-        if YOUNG_DAYS > 0 and first_ts is not None and young_cutoff_ts is not None:
-            is_young = (first_ts > young_cutoff_ts)
-
-        # eligibility per trigger
-        eligible_buy = (buy_sum >= min_usd) and (buy_sum > 0)
-        eligible_transfer = transfers_enabled and (transfer_sum >= transfer_min_usd) and (transfer_sum > 0)
-
-        # applica vincolo "vergine/non-vergine" se young_days>0
-        if YOUNG_DAYS > 0 and is_young is not None:
-            # BUY solo se young (vergine)
-            if eligible_buy and (not is_young):
-                eligible_buy = False
-                skipped_old += 1
-                if (LEVEL == logging.DEBUG) or LOG_REASONS:
-                    log.debug(f"SKIP buy old | {addr} first_ts={first_ts} cutoff={young_cutoff_ts}")
-
-            # TRANSFER: nessun vincolo età (segnala sia young che old)
-            # (quindi NON fare nulla qui)
-
-        if not eligible_buy and not eligible_transfer:
+        # filtro young DISATTIVABILE: solo se YOUNG_DAYS > 0
+        if YOUNG_DAYS > 0 and (first_ts is not None) and (first_ts <= young_cutoff_ts):
+            skipped_old += 1
+            if (LEVEL == logging.DEBUG) or LOG_REASONS:
+                log.debug(f"SKIP old | {addr} first_ts={first_ts} cutoff={young_cutoff_ts}")
             continue
 
-        if eligible_buy:
-            eligible_buy_candidates += 1
-        if eligible_transfer:
-            eligible_transfer_candidates += 1
-
-        # balance
         try:
             bal_tok = get_wallet_token_balance_fresh(addr, token, dec)
         except BudgetExhausted as e:
@@ -1152,13 +958,6 @@ def main():
         user_name = get_or_assign_name(addr, names_list)
         kept_name_map[addr] = user_name
 
-        trigger_parts = []
-        if eligible_buy:
-            trigger_parts.append("BUY")
-        if eligible_transfer:
-            trigger_parts.append("TRANSFER")
-        trigger = "+".join(trigger_parts) if trigger_parts else ""
-
         # marca seen su wallet_db + calcola is_new
         is_new, rec_post = WALLET_DB.mark_seen(
             addr=addr,
@@ -1168,8 +967,7 @@ def main():
             first_tx_ts=first_ts,
             balance_usd=bal_usd,
             balance_token=bal_tok,
-            sum_buys_usd_window=(buy_sum if eligible_buy else None),
-            sum_transfers_usd_window=(transfer_sum if eligible_transfer else None),
+            sum_buys_usd_window=sum_usd,
         )
         if is_new:
             new_wallets_in_results += 1
@@ -1178,7 +976,6 @@ def main():
             {
                 "address": addr,
                 "user_name": user_name,
-                "trigger": trigger,
                 "is_new": bool(is_new),
                 "first_seen_ts": rec_post.get("first_seen_ts"),
                 "last_seen_ts": rec_post.get("last_seen_ts"),
@@ -1186,17 +983,16 @@ def main():
                 "balance_token": bal_tok,
                 "balance_usd": bal_usd,
                 "first_tx_ts": first_ts,
-                "sum_buys_usd_window": (buy_sum if eligible_buy else None),
-                "sum_transfers_usd_window": (transfer_sum if eligible_transfer else None),
-                "transfers_count_window": (transfers_count.get(addr) if eligible_transfer else None),
-                "max_transfer_usd_window": (transfers_max.get(addr) if eligible_transfer else None),
+                "sum_buys_usd_window": sum_usd,
             }
         )
         kept += 1
 
     results.sort(key=lambda r: (r["balance_usd"] if r["balance_usd"] is not None else -1), reverse=True)
 
-    # agg: top spender “raw” per finestra (BUY)
+    # top spender “raw” per finestra, con nome se:
+    # - validato in questa run (kept_name_map)
+    # - oppure già presente in WALLET_DB (stabile)
     top_spenders_all = []
     for addr, sum_usd in sorted(buyers_sum_usd.items(), key=lambda kv: kv[1], reverse=True)[:TOP_SPENDERS_N]:
         rec = {"address": addr, "sum_buys_usd_window": float(sum_usd)}
@@ -1208,23 +1004,6 @@ def main():
                 rec["user_name"] = dbrec["name"].strip()
         top_spenders_all.append(rec)
 
-    # agg: top transfers “raw” per finestra (TRANSFER)
-    top_transfers_all = []
-    for addr, sum_usd in sorted(transfers_sum_usd.items(), key=lambda kv: kv[1], reverse=True)[:TOP_TRANSFERS_N]:
-        rec = {
-            "address": addr,
-            "sum_transfers_usd_window": float(sum_usd),
-            "transfers_count_window": int(transfers_count.get(addr, 0)),
-            "max_transfer_usd_window": float(transfers_max.get(addr, 0.0)),
-        }
-        if addr in kept_name_map:
-            rec["user_name"] = kept_name_map[addr]
-        else:
-            dbrec = WALLET_DB.get(addr)
-            if dbrec and isinstance(dbrec, dict) and isinstance(dbrec.get("name"), str) and dbrec.get("name").strip():
-                rec["user_name"] = dbrec["name"].strip()
-        top_transfers_all.append(rec)
-
     out = {
         "chain": CHAIN,
         "token": token,
@@ -1234,8 +1013,6 @@ def main():
         "price_source": price_source,
         "window_minutes": minutes,
         "min_usd": min_usd,
-        "transfer_min_usd": transfer_min_usd,
-        "transfers_enabled": bool(transfers_enabled),
         "young_days": YOUNG_DAYS,
         "min_balance_usd": NAME_MIN_BAL_USD,
         "from_block": None if SKIP_DATE_TO_BLOCK else from_blk,
@@ -1249,17 +1026,10 @@ def main():
             "total_swaps_in_window": total_swaps_in_window,
             "buys_ge_min_usd": total_buys_ge_min,
             "wallet_unici_ge_min_usd": len(buyers_sum_usd),
-            "total_transfers_scanned": total_transfers,
-            "total_transfers_in_window": total_transfers_in_window,
-            "transfers_ge_min_usd": total_transfers_ge_min,
-            "wallet_unici_ge_min_transfers_usd": len(transfers_sum_usd),
-            "candidate_wallets_union": len(candidate_wallets),
-            "eligible_buy_candidates": eligible_buy_candidates,
-            "eligible_transfer_candidates": eligible_transfer_candidates,
-            "wallet_valutati_topk": len(candidate_wallets),
+            "wallet_valutati_topk": len(wallets_ranked),
             "wallet_tenuti": kept,
             "wallet_new_in_results": new_wallets_in_results,
-            "wallet_scartati_old_buy": skipped_old,
+            "wallet_scartati_old": skipped_old,
             "wallet_scartati_low_balance_usd": skipped_low_bal,
             "wallet_scartati_no_price": skipped_no_price,
             "budget_exhausted": budget_exhausted_at,
@@ -1268,12 +1038,9 @@ def main():
             "dexscreener_bucket_sells": agg_sells if isinstance(agg_sells, int) else 0,
         },
         "agg": {
-            "buyers_total_usd_window_all": float(sum(buyers_sum_usd.values())),
-            "buyers_unique_all": int(len(buyers_sum_usd)),
-            "transfers_total_usd_window_all": float(sum(transfers_sum_usd.values())),
-            "transfers_unique_all": int(len(transfers_sum_usd)),
+            "buyers_total_usd_window_all": buyers_total_usd_all,
+            "buyers_unique_all": buyers_unique_all,
             "top_spenders_all": top_spenders_all,
-            "top_transfers_all": top_transfers_all,
         },
         "results": results,
     }
