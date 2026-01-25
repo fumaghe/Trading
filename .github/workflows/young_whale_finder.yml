@@ -182,6 +182,8 @@ jobs:
                   transfers = r.get("sum_transfers_usd_window")
                   tmax = r.get("max_transfer_usd_window")
                   tcnt = r.get("transfers_count_window")
+                  tiso = r.get("last_transfer_iso_window") 
+                  tts = r.get("last_transfer_ts_window") 
 
                   first_ts = r.get("first_tx_ts")
                   age_line = ""
@@ -207,8 +209,17 @@ jobs:
                           extra.append(f"n={int(tcnt)}")
                       if tmax is not None:
                           extra.append(f"max={fmt_money(tmax)}")
+                      if tiso:
+                          extra.append(f"ora={tiso}")
+                      else:
+                          # fallback: se manca ISO ma c'è ts, formatta
+                          if isinstance(tts, (int, float)) and tts > 0:
+                              dt = datetime.fromtimestamp(int(tts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                              extra.append(f"ora={dt}")
+
                       suffix = f" ({', '.join(extra)})" if extra else ""
                       lines.append(f"🟣 TRANSFER in ingresso: <b>{fmt_money(transfers)}</b>{suffix}")
+
 
                   # Always show balance + wallet
                   lines.append(f"Balance USD: <b>{fmt_money(balu)}</b>")

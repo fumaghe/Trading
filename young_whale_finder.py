@@ -1014,6 +1014,10 @@ def main():
     transfers_count: Dict[str, int] = {}
     transfers_max: Dict[str, float] = {}
 
+    # NEW: ultimo timestamp transfer>=soglia per wallet (e stringa ISO pronta)
+    transfers_last_ts: Dict[str, int] = {}
+    transfers_last_iso: Dict[str, str] = {}
+
     total_transfers = 0
     total_transfers_in_window = 0
     total_transfers_ge_min = 0
@@ -1042,8 +1046,15 @@ def main():
                     continue
 
                 total_transfers_ge_min += 1
+                t_ts = _parse_ts(_first_key(t, ["block_timestamp", "blockTimestamp"]))
+                if t_ts is not None:
+                    prev_ts = transfers_last_ts.get(w := normalize_addr(str(to_addr)))
+                    if (prev_ts is None) or (int(t_ts) > int(prev_ts)):
+                        transfers_last_ts[w] = int(t_ts)
+                        transfers_last_iso[w] = datetime.fromtimestamp(int(t_ts), tz=timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+                else:
+                    w = normalize_addr(str(to_addr))
 
-                w = normalize_addr(str(to_addr))
                 transfers_sum_usd[w] = transfers_sum_usd.get(w, 0.0) + float(usd_val)
                 transfers_count[w] = transfers_count.get(w, 0) + 1
                 prev = transfers_max.get(w, 0.0)
@@ -1190,6 +1201,8 @@ def main():
                 "sum_transfers_usd_window": (transfer_sum if eligible_transfer else None),
                 "transfers_count_window": (transfers_count.get(addr) if eligible_transfer else None),
                 "max_transfer_usd_window": (transfers_max.get(addr) if eligible_transfer else None),
+                "last_transfer_ts_window": (transfers_last_ts.get(addr) if eligible_transfer else None),
+                "last_transfer_iso_window": (transfers_last_iso.get(addr) if eligible_transfer else None),
             }
         )
         kept += 1
