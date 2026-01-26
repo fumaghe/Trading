@@ -37,7 +37,7 @@ jobs:
       YWF_NAME_MIN_BAL_USD: "1500"
 
       # NUOVO: soglia TRANSFER (USD) per wallet old (non-vergini)
-      YWF_TRANSFER_MIN_USD: "5000"
+      YWF_TRANSFER_MIN_USD: "3000"
 
       # NUOVO: DB persistente wallet (nome + età + seen/new)
       YWF_WALLET_DB: "wallet_db.json"
@@ -89,8 +89,9 @@ jobs:
               --token ${ADDR} \
               --minutes 50 \
               --min-usd 100 \
-              --transfer-min-usd ${YWF_TRANSFER_MIN_USD:-5000} \
-              --young-days 7"
+              --transfer-min-usd ${YWF_TRANSFER_MIN_USD:-3000} \
+              --young-days 7 \
+              --transfer-young-days 40"
             echo "CMD: $CMD"
 
             OUTJSON="out/out-${SYM}.json"

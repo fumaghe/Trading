@@ -12,13 +12,14 @@ Estensioni (persistenza wallet):
   - is_new: True se address mai visto prima nel wallet_db
   - first_seen_ts, last_seen_ts, seen_count (post-update)
 
-ESTENSIONE TRANSFER (richiesta):
-- Oltre ai BUY per wallet "young/vergini", aggiunge controllo TRANSFER in ingresso
-  per wallet "old/non-vergini" con soglia USD (default 5000).
-- I messaggi Telegram distinguono BUY e TRANSFER tramite campo "trigger".
+ESTENSIONE TRANSFER:
+- Oltre ai BUY per wallet "young" (vincolo via --young-days), aggiunge controllo TRANSFER in ingresso
+  con soglia USD (--transfer-min-usd).
+- NEW: filtro età SOLO per i TRANSFER via --transfer-young-days (0=off).
+  Esempio: --young-days 7 (BUY) e --transfer-young-days 40 (TRANSFER).
 
-Nota:
-- Il vecchio DiskCache (ywf_cache.json) resta, ma la stabilità NOME/ETA' è garantita dal wallet_db persistente.
+Nota sicurezza:
+- NON lasciare chiavi Moralis hardcoded nel file. Usa sempre la env MORALIS_API_KEY (GitHub Secrets).
 """
 
 from __future__ import annotations
@@ -68,7 +69,7 @@ log = logging.getLogger("ywf")
 # -------------------- Config -------------------- #
 
 # Moralis
-MORALIS_API_KEY = os.getenv("MORALIS_API_KEY", "").strip() or "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJub25jZSI6Ijg3YTE1YmJmLWY5NmItNDY5ZS04MWViLTUyMWExNWUxNWU2NSIsIm9yZ0lkIjoiMzU5OTMzIiwidXNlcklkIjoiMzY5OTEzIiwidHlwZUlkIjoiYjVkN2Q2YjctNGM4ZC00NjRhLWIyNGMtMjU2MTk0NzJmNGE5IiwidHlwZSI6IlBST0pFQ1QiLCJpYXQiOjE3NjI1MzAzMDUsImV4cCI6NDkxODI5MDMwNX0.YPGGVEguNqhoy-5bE0k-3BBhMdvKNWxorjh4HFdgh1I"
+MORALIS_API_KEY = os.getenv("MORALIS_API_KEY", "").strip()
 MORALIS_BASE = "https://deep-index.moralis.io/api/v2.2"
 
 # DexScreener
@@ -122,7 +123,7 @@ NAMES_FILE = os.getenv("YWF_NAMES_FILE", "nomi.txt")
 # Soglia balance USD per essere considerato "validato" (results + nome)
 NAME_MIN_BAL_USD = float(os.getenv("YWF_NAME_MIN_BAL_USD", "1500"))
 
-# TRANSFER threshold (USD) per wallet old/non-vergini
+# TRANSFER threshold (USD)
 TRANSFER_MIN_USD_DEFAULT = float(os.getenv("YWF_TRANSFER_MIN_USD", "5000"))
 
 # Se vuoi loggare il motivo di scarto dei singoli wallet (solo in DEBUG)
@@ -868,9 +869,18 @@ def parse_args():
     ap.add_argument("--token", required=True, help="Token address (BSC)")
     ap.add_argument("--minutes", type=int, default=5, help="Finestra in minuti")
     ap.add_argument("--min-usd", type=float, default=500.0, help="Soglia minima USD per BUY (wallet young)")
-    ap.add_argument("--transfer-min-usd", type=float, default=TRANSFER_MIN_USD_DEFAULT,
-                    help="Soglia minima USD per TRANSFER in ingresso (wallet old)")
-    ap.add_argument("--young-days", type=int, default=YOUNG_DAYS_DEFAULT, help="Wallet più giovani di N giorni (0=off)")
+    ap.add_argument(
+        "--transfer-min-usd",
+        type=float,
+        default=TRANSFER_MIN_USD_DEFAULT,
+        help="Soglia minima USD per TRANSFER in ingresso",
+    )
+    ap.add_argument("--young-days", type=int, default=YOUNG_DAYS_DEFAULT, help="BUY: wallet più giovani di N giorni (0=off)")
+
+    # NEW: filtro età SOLO per TRANSFER
+    ap.add_argument("--transfer-young-days", type=int, default=0,
+                    help="TRANSFER: segnala solo wallet con età <= N giorni (0=off)")
+
     ap.add_argument("--disable-transfers", action="store_true", help="Disabilita scansione transfers")
     return ap.parse_args()
 
@@ -885,13 +895,20 @@ def main():
     minutes = max(1, int(args.minutes))
     min_usd = max(0.0, float(args.min_usd))
     transfer_min_usd = max(0.0, float(args.transfer_min_usd))
+
+    # BUY: invariato
     YOUNG_DAYS = max(0, int(args.young_days))
+
+    # NEW: TRANSFER only
+    TRANSFER_YOUNG_DAYS = max(0, int(getattr(args, "transfer_young_days", 0) or 0))
+
     transfers_enabled = (not args.disable_transfers) and (transfer_min_usd > 0)
 
     log.info(
         f"Start | token={token} minutes={minutes} min_usd(BUY)={min_usd} "
         f"transfer_min_usd(TRANSFER)={transfer_min_usd} transfers_enabled={int(transfers_enabled)} "
-        f"young_days={YOUNG_DAYS} | MAX_SWAPS={MAX_SWAPS} MAX_TRANSFERS={MAX_TRANSFERS} "
+        f"young_days(BUY)={YOUNG_DAYS} transfer_young_days(TRANSFER)={TRANSFER_YOUNG_DAYS} | "
+        f"MAX_SWAPS={MAX_SWAPS} MAX_TRANSFERS={MAX_TRANSFERS} "
         f"budget_calls={BUDGET_CALLS} log={LOG_LEVEL.lower()} | MIN_BAL_USD={NAME_MIN_BAL_USD} "
         f"TOP_SPENDERS_N={TOP_SPENDERS_N} TOP_TRANSFERS_N={TOP_TRANSFERS_N} | WALLET_DB={WALLET_DB_PATH}"
     )
@@ -1014,7 +1031,6 @@ def main():
     transfers_count: Dict[str, int] = {}
     transfers_max: Dict[str, float] = {}
 
-    # NEW: ultimo timestamp transfer>=soglia per wallet (e stringa ISO pronta)
     transfers_last_ts: Dict[str, int] = {}
     transfers_last_iso: Dict[str, str] = {}
 
@@ -1082,11 +1098,15 @@ def main():
 
     names_list = load_names_list(NAMES_FILE)
 
+    # BUY cutoff (invariato)
     young_cutoff_ts = int(now.timestamp()) - YOUNG_DAYS * 86400 if YOUNG_DAYS > 0 else None
+    # TRANSFER cutoff (nuovo, separato)
+    transfer_young_cutoff_ts = int(now.timestamp()) - TRANSFER_YOUNG_DAYS * 86400 if TRANSFER_YOUNG_DAYS > 0 else None
 
     results: List[dict] = []
     kept = 0
     skipped_old = 0
+    skipped_transfer_old = 0
     skipped_low_bal = 0
     skipped_no_price = 0
     budget_exhausted_at = None
@@ -1109,25 +1129,35 @@ def main():
             log.warning(str(e))
             break
 
+        # BUY young (invariato)
         is_young = None
         if YOUNG_DAYS > 0 and first_ts is not None and young_cutoff_ts is not None:
             is_young = (first_ts > young_cutoff_ts)
+
+        # TRANSFER young (nuovo, separato)
+        is_young_transfer = None
+        if TRANSFER_YOUNG_DAYS > 0 and first_ts is not None and transfer_young_cutoff_ts is not None:
+            is_young_transfer = (first_ts > transfer_young_cutoff_ts)
 
         # eligibility per trigger
         eligible_buy = (buy_sum >= min_usd) and (buy_sum > 0)
         eligible_transfer = transfers_enabled and (transfer_sum >= transfer_min_usd) and (transfer_sum > 0)
 
-        # applica vincolo "vergine/non-vergine" se young_days>0
+        # BUY: applica vincolo come prima (solo young)
         if YOUNG_DAYS > 0 and is_young is not None:
-            # BUY solo se young (vergine)
             if eligible_buy and (not is_young):
                 eligible_buy = False
                 skipped_old += 1
                 if (LEVEL == logging.DEBUG) or LOG_REASONS:
                     log.debug(f"SKIP buy old | {addr} first_ts={first_ts} cutoff={young_cutoff_ts}")
 
-            # TRANSFER: nessun vincolo età (segnala sia young che old)
-            # (quindi NON fare nulla qui)
+        # TRANSFER: applica vincolo SOLO se impostato --transfer-young-days
+        if TRANSFER_YOUNG_DAYS > 0 and is_young_transfer is not None:
+            if eligible_transfer and (not is_young_transfer):
+                eligible_transfer = False
+                skipped_transfer_old += 1
+                if (LEVEL == logging.DEBUG) or LOG_REASONS:
+                    log.debug(f"SKIP transfer old | {addr} first_ts={first_ts} cutoff={transfer_young_cutoff_ts}")
 
         if not eligible_buy and not eligible_transfer:
             continue
@@ -1250,6 +1280,7 @@ def main():
         "transfer_min_usd": transfer_min_usd,
         "transfers_enabled": bool(transfers_enabled),
         "young_days": YOUNG_DAYS,
+        "transfer_young_days": TRANSFER_YOUNG_DAYS,
         "min_balance_usd": NAME_MIN_BAL_USD,
         "from_block": None if SKIP_DATE_TO_BLOCK else from_blk,
         "to_block": None if SKIP_DATE_TO_BLOCK else to_blk,
@@ -1273,6 +1304,7 @@ def main():
             "wallet_tenuti": kept,
             "wallet_new_in_results": new_wallets_in_results,
             "wallet_scartati_old_buy": skipped_old,
+            "wallet_scartati_old_transfer": skipped_transfer_old,
             "wallet_scartati_low_balance_usd": skipped_low_bal,
             "wallet_scartati_no_price": skipped_no_price,
             "budget_exhausted": budget_exhausted_at,
