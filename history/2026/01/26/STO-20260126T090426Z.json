@@ -1,0 +1,64 @@
+{
+  "ts": "2026-01-26T09:04:26.446278Z",
+  "symbol": "STO",
+  "token": "0xdAf1695c41327b61B9b9965Ac6A5843A3198cf07",
+  "price_usd": 0.09205,
+  "main_pair_hint": "0xcF0478b496aE6a80675bB04E032eCf228C2F0cEe",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 101,
+    "total_swaps_in_window": 101,
+    "buys_ge_min_usd": 35,
+    "wallet_unici_ge_min_usd": 6,
+    "total_transfers_scanned": 301,
+    "total_transfers_in_window": 301,
+    "transfers_ge_min_usd": 0,
+    "wallet_unici_ge_min_transfers_usd": 0,
+    "candidate_wallets_union": 6,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 6,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 6,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 166,
+    "dexscreener_bucket_sells": 82
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 5110.455184094368,
+    "buyers_unique_all": 6,
+    "transfers_total_usd_window_all": 0.0,
+    "transfers_unique_all": 0,
+    "top_spenders_all": [
+      {
+        "address": "0x6cd1b8cfcd2ca2bcdb46a2d96bd22b92e16ba427",
+        "sum_buys_usd_window": 1851.126020888009
+      },
+      {
+        "address": "0x5e27758ff99a31cf2534e471000370066b293f9d",
+        "sum_buys_usd_window": 1523.5377457704906
+      },
+      {
+        "address": "0x0000b8258eb0a75e660317f914294fd2482a453e",
+        "sum_buys_usd_window": 900.5184731241725
+      },
+      {
+        "address": "0xf86aabe61b1df0f33dd09f3b7bf8232f3d01a904",
+        "sum_buys_usd_window": 511.15373228196876
+      },
+      {
+        "address": "0xd652637a3bb1195bcc6ffeb84af181f6c8751157",
+        "sum_buys_usd_window": 222.3616118332342
+      },
+      {
+        "address": "0x2f9d9a39d4be08a44992c09a72284b3e534bd7d4",
+        "sum_buys_usd_window": 101.75760019649232
+      }
+    ],
+    "top_transfers_all": []
+  }
+}
