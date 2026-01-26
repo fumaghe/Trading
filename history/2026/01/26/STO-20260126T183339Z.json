@@ -1,0 +1,45 @@
+{
+  "ts": "2026-01-26T18:33:39.533559Z",
+  "symbol": "STO",
+  "token": "0xdAf1695c41327b61B9b9965Ac6A5843A3198cf07",
+  "price_usd": 0.08468,
+  "main_pair_hint": "0x2ad2651A07b4949C0F892CFa27C3C73fb3b020f6",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 7,
+    "total_swaps_in_window": 7,
+    "buys_ge_min_usd": 1,
+    "wallet_unici_ge_min_usd": 1,
+    "total_transfers_scanned": 32,
+    "total_transfers_in_window": 32,
+    "transfers_ge_min_usd": 0,
+    "wallet_unici_ge_min_transfers_usd": 0,
+    "candidate_wallets_union": 1,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 1,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 1,
+    "wallet_scartati_old_transfer": 0,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 25,
+    "dexscreener_bucket_sells": 1
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 139.05162466176472,
+    "buyers_unique_all": 1,
+    "transfers_total_usd_window_all": 0.0,
+    "transfers_unique_all": 0,
+    "top_spenders_all": [
+      {
+        "address": "0x7e83efedd4f854fc1adf03bdce44b958fc19cf46",
+        "sum_buys_usd_window": 139.05162466176472
+      }
+    ],
+    "top_transfers_all": []
+  }
+}
