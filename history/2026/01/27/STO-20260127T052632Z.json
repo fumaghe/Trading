@@ -1,0 +1,75 @@
+{
+  "ts": "2026-01-27T05:26:32.319423Z",
+  "symbol": "STO",
+  "token": "0xdAf1695c41327b61B9b9965Ac6A5843A3198cf07",
+  "price_usd": 0.08922,
+  "main_pair_hint": "0x2ad2651A07b4949C0F892CFa27C3C73fb3b020f6",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 26,
+    "total_swaps_in_window": 26,
+    "buys_ge_min_usd": 8,
+    "wallet_unici_ge_min_usd": 5,
+    "total_transfers_scanned": 58,
+    "total_transfers_in_window": 58,
+    "transfers_ge_min_usd": 4,
+    "wallet_unici_ge_min_transfers_usd": 2,
+    "candidate_wallets_union": 7,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 7,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 5,
+    "wallet_scartati_old_transfer": 2,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 33,
+    "dexscreener_bucket_sells": 29
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 1219.9141065519484,
+    "buyers_unique_all": 5,
+    "transfers_total_usd_window_all": 14067.096491279997,
+    "transfers_unique_all": 2,
+    "top_spenders_all": [
+      {
+        "address": "0xabba7bef6dffba87d66e6c3d2d612b1a57df2303",
+        "sum_buys_usd_window": 580.1206644013049
+      },
+      {
+        "address": "0x13cf549f75abfe0efb6dca002302c9baac78e35a",
+        "sum_buys_usd_window": 221.75256940314068
+      },
+      {
+        "address": "0x595db43fb04e1422222ecb327d98ddafdc814241",
+        "sum_buys_usd_window": 191.83847117992005
+      },
+      {
+        "address": "0x5e27758ff99a31cf2534e471000370066b293f9d",
+        "sum_buys_usd_window": 125.81785934522782
+      },
+      {
+        "address": "0xb5664d3e2efd57ada2e21eef2105bd9c7c379ed1",
+        "sum_buys_usd_window": 100.38454222235491
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+        "sum_transfers_usd_window": 7033.548245639999,
+        "transfers_count_window": 2,
+        "max_transfer_usd_window": 3517.8809861399995,
+        "user_name": "Sadness"
+      },
+      {
+        "address": "0xd3f9f564d1bb7cfc9444401a50e2ff9f8e992a76",
+        "sum_transfers_usd_window": 7033.548245639999,
+        "transfers_count_window": 2,
+        "max_transfer_usd_window": 3517.8809861399995
+      }
+    ]
+  }
+}
