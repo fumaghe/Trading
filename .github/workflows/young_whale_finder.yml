@@ -78,11 +78,12 @@ jobs:
           TOKENS["STO"]="0xdAf1695c41327b61B9b9965Ac6A5843A3198cf07"
           TOKENS["KGEN"]="0xF3d5b4c34Ed623478cc5141861776E6cf7AE3A1E"
           TOKENS["CYS"]="0x0C69199C1562233640e0Db5Ce2c399A88eB507C7"
+          TOKENS["BTR"]="0x787abd73593bed588852163402d191c302c7f8b6"
 
           mkdir -p out
 
           EXIT_CODE=0
-          for SYM in IRYS AIO B2 RIVER BLESS STO KGEN CYS; do
+          for SYM in IRYS AIO B2 RIVER BLESS STO KGEN CYS BTR; do
             ADDR="${TOKENS[$SYM]}"
             echo "Running ${SYM} (${ADDR})"
             CMD="python young_whale_finder.py \
