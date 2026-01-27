@@ -1,0 +1,122 @@
+{
+  "ts": "2026-01-27T22:54:18.681150Z",
+  "symbol": "AIO",
+  "token": "0x81a7DA4074b8e0eD51beA40f9dCbDF4d9d4832b4",
+  "price_usd": 0.1679,
+  "main_pair_hint": "0x97620e003c03381EaCBDE7135F28d94303bb5672",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 217,
+    "total_swaps_in_window": 217,
+    "buys_ge_min_usd": 138,
+    "wallet_unici_ge_min_usd": 15,
+    "total_transfers_scanned": 852,
+    "total_transfers_in_window": 852,
+    "transfers_ge_min_usd": 116,
+    "wallet_unici_ge_min_transfers_usd": 3,
+    "candidate_wallets_union": 18,
+    "eligible_buy_candidates": 2,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 18,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 13,
+    "wallet_scartati_old_transfer": 3,
+    "wallet_scartati_low_balance_usd": 2,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 86,
+    "dexscreener_bucket_sells": 110
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 208483.82226532858,
+    "buyers_unique_all": 15,
+    "transfers_total_usd_window_all": 547403.2802804528,
+    "transfers_unique_all": 3,
+    "top_spenders_all": [
+      {
+        "address": "0x45a2e455b2f7054f02317533057ed60196c90f73",
+        "sum_buys_usd_window": 26103.774887358093
+      },
+      {
+        "address": "0xb94741fb32409f914c67d161efa718815c038b3f",
+        "sum_buys_usd_window": 25999.426672714184
+      },
+      {
+        "address": "0x3d6035e23ce306a0b3dd23977f6aa904c9bd3154",
+        "sum_buys_usd_window": 23133.48789283663
+      },
+      {
+        "address": "0xdfc1db4904dc1e7718d4783bd4be02ac1967ae86",
+        "sum_buys_usd_window": 21415.443173949057
+      },
+      {
+        "address": "0xda728a2e3c413b905b90d626e7d942435f80fc38",
+        "sum_buys_usd_window": 21261.527753555092
+      },
+      {
+        "address": "0x87866aa14c37306ef3ee49468f79f4e0e1cc52f6",
+        "sum_buys_usd_window": 21034.760704210974
+      },
+      {
+        "address": "0x5ddf9200ca8163585d1d9b05022adc14c32a71f1",
+        "sum_buys_usd_window": 20949.559681020222
+      },
+      {
+        "address": "0xac30203cb479ee89696d9e7ec98dca08fd538065",
+        "sum_buys_usd_window": 20197.6138968502
+      },
+      {
+        "address": "0xb6e27c34a794d04e8e078b46cb38093be26f0516",
+        "sum_buys_usd_window": 15594.419726001814
+      },
+      {
+        "address": "0x6e1b2a5bc88227d7067b4d02ef82dd1b8c4fcd7b",
+        "sum_buys_usd_window": 11690.792458404896
+      },
+      {
+        "address": "0xc6b3f2004daf41b09e3a2f9c3f3116ecf18a365a",
+        "sum_buys_usd_window": 499.95
+      },
+      {
+        "address": "0x18f063eac520ca6760bfca45e528dbf658e15a4b",
+        "sum_buys_usd_window": 180.2898346611823
+      },
+      {
+        "address": "0x4fc39f1c7be276b279954e53959390b57dee50c2",
+        "sum_buys_usd_window": 154.4286157024692
+      },
+      {
+        "address": "0xf58b7a3a6c8398f470813fcfb4c9b12085f702c4",
+        "sum_buys_usd_window": 141.7751366332033
+      },
+      {
+        "address": "0xb2ec7ca365d3c2e710da3365dcb6d95fa656e0b5",
+        "sum_buys_usd_window": 126.57183143055934
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0x099bcb99d375027295a713fce771545fa2793c98",
+        "sum_transfers_usd_window": 274277.5552083514,
+        "transfers_count_window": 58,
+        "max_transfer_usd_window": 5072.947564455789
+      },
+      {
+        "address": "0x28e2ea090877bf75740558f6bfb36a5ffee9e9df",
+        "sum_transfers_usd_window": 136751.73997266212,
+        "transfers_count_window": 29,
+        "max_transfer_usd_window": 5072.947564455789,
+        "user_name": "Captain Boomerang"
+      },
+      {
+        "address": "0x5a23b8f2ed7a15d38923a8fbd84df2c8a18c0f48",
+        "sum_transfers_usd_window": 136373.98509943925,
+        "transfers_count_window": 29,
+        "max_transfer_usd_window": 5026.972690190006,
+        "user_name": "Raiden Thunder God"
+      }
+    ]
+  }
+}
