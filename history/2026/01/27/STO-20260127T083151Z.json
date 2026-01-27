@@ -1,0 +1,101 @@
+{
+  "ts": "2026-01-27T08:31:51.058851Z",
+  "symbol": "STO",
+  "token": "0xdAf1695c41327b61B9b9965Ac6A5843A3198cf07",
+  "price_usd": 0.0875,
+  "main_pair_hint": "0x2ad2651A07b4949C0F892CFa27C3C73fb3b020f6",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 49,
+    "total_swaps_in_window": 49,
+    "buys_ge_min_usd": 9,
+    "wallet_unici_ge_min_usd": 7,
+    "total_transfers_scanned": 95,
+    "total_transfers_in_window": 95,
+    "transfers_ge_min_usd": 5,
+    "wallet_unici_ge_min_transfers_usd": 5,
+    "candidate_wallets_union": 12,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 12,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 7,
+    "wallet_scartati_old_transfer": 5,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 3,
+    "dexscreener_bucket_sells": 75
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 1095.9634740490753,
+    "buyers_unique_all": 7,
+    "transfers_total_usd_window_all": 37842.919624999995,
+    "transfers_unique_all": 5,
+    "top_spenders_all": [
+      {
+        "address": "0x3947017db40bc406da876f05e9d07c64f4728961",
+        "sum_buys_usd_window": 227.54937185260027
+      },
+      {
+        "address": "0xb2edee1dc145624139fa361385c1e9845976f3a1",
+        "sum_buys_usd_window": 221.48509193218644
+      },
+      {
+        "address": "0x445b179925905671ad944008958ad4809b832911",
+        "sum_buys_usd_window": 190.30234125675963
+      },
+      {
+        "address": "0x61a947b31b1b2ff468e5968288b454261f85a3b5",
+        "sum_buys_usd_window": 123.12597219284812
+      },
+      {
+        "address": "0xc460b4990d05bc4537602b29c15ab8b6089cd71e",
+        "sum_buys_usd_window": 121.343582484749
+      },
+      {
+        "address": "0x2acbe7e9a41690af1353d0ce2991748ecd8b6e6c",
+        "sum_buys_usd_window": 112.05001391142352
+      },
+      {
+        "address": "0x164619b11af2d0dc6241ad669cb27bf52537c31d",
+        "sum_buys_usd_window": 100.10710041850825
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0x8894e0a0c962cb723c1976a4421c95949be2d4e3",
+        "sum_transfers_usd_window": 12980.86125,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 12980.86125
+      },
+      {
+        "address": "0x06fd4ba7973a0d39a91734bbc35bc2bcaa99e3b0",
+        "sum_transfers_usd_window": 12980.86125,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 12980.86125
+      },
+      {
+        "address": "0x22ca19f13c5979d93bbe7b082e8e084a6c7b2511",
+        "sum_transfers_usd_window": 5595.2496249999995,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 5595.2496249999995
+      },
+      {
+        "address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+        "sum_transfers_usd_window": 3142.9737499999997,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3142.9737499999997,
+        "user_name": "Sadness"
+      },
+      {
+        "address": "0xfed2399b20011af1fc985d5354f12cbc57ed48f9",
+        "sum_transfers_usd_window": 3142.9737499999997,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3142.9737499999997
+      }
+    ]
+  }
+}
