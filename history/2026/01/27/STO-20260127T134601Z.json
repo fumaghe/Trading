@@ -1,0 +1,65 @@
+{
+  "ts": "2026-01-27T13:46:01.653731Z",
+  "symbol": "STO",
+  "token": "0xdAf1695c41327b61B9b9965Ac6A5843A3198cf07",
+  "price_usd": 0.09153,
+  "main_pair_hint": "0x2ad2651A07b4949C0F892CFa27C3C73fb3b020f6",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 25,
+    "total_swaps_in_window": 25,
+    "buys_ge_min_usd": 10,
+    "wallet_unici_ge_min_usd": 4,
+    "total_transfers_scanned": 81,
+    "total_transfers_in_window": 81,
+    "transfers_ge_min_usd": 1,
+    "wallet_unici_ge_min_transfers_usd": 1,
+    "candidate_wallets_union": 5,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 5,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 4,
+    "wallet_scartati_old_transfer": 1,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 55,
+    "dexscreener_bucket_sells": 4
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 2011.7454758552683,
+    "buyers_unique_all": 4,
+    "transfers_total_usd_window_all": 3003.822819694744,
+    "transfers_unique_all": 1,
+    "top_spenders_all": [
+      {
+        "address": "0x595db43fb04e1422222ecb327d98ddafdc814241",
+        "sum_buys_usd_window": 1328.7507449017412
+      },
+      {
+        "address": "0x1dc89ab25ab5d8714fcf9ee4bd9c9a58debeb4d8",
+        "sum_buys_usd_window": 365.04310709356366
+      },
+      {
+        "address": "0x2e4865ab5961c9c2715714316e1995cfb1e9b86e",
+        "sum_buys_usd_window": 212.28308520308002
+      },
+      {
+        "address": "0x123f4df365891c6189a10365467a68b813e1dd50",
+        "sum_buys_usd_window": 105.6685386568835
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0xd97107064b8c7520aae6c6e6ca75bb2aa73b670d",
+        "sum_transfers_usd_window": 3003.822819694744,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3003.822819694744,
+        "user_name": "Venom"
+      }
+    ]
+  }
+}
