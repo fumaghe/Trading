@@ -1,0 +1,370 @@
+{
+  "ts": "2026-02-06T07:34:16.553474Z",
+  "symbol": "RIVER",
+  "token": "0xdA7AD9dea9397cffdDAE2F8a052B82f1484252B3",
+  "price_usd": 15.58,
+  "main_pair_hint": "0xb249B6E4AC29301f680963a45FaC7D09779Ef980",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 1171,
+    "total_swaps_in_window": 1171,
+    "buys_ge_min_usd": 515,
+    "wallet_unici_ge_min_usd": 151,
+    "total_transfers_scanned": 3945,
+    "total_transfers_in_window": 3945,
+    "transfers_ge_min_usd": 50,
+    "wallet_unici_ge_min_transfers_usd": 20,
+    "candidate_wallets_union": 169,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 169,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 47,
+    "wallet_scartati_old_transfer": 4,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": [
+      "first_tx",
+      "Budget Moralis esaurito: 60/60 chiamate"
+    ],
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 1089,
+    "dexscreener_bucket_sells": 1489
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 167858.05672254963,
+    "buyers_unique_all": 151,
+    "transfers_total_usd_window_all": 317009.47457119374,
+    "transfers_unique_all": 20,
+    "top_spenders_all": [
+      {
+        "address": "0x2589ef03d437130607f039cfc2146a1ecf8691ea",
+        "sum_buys_usd_window": 31961.637418879196
+      },
+      {
+        "address": "0x14df592921741c9cf9c0971b24e4de512ed52277",
+        "sum_buys_usd_window": 20653.962469965285
+      },
+      {
+        "address": "0x930200f76ffd57703d8ad5ed9d71261d3e3859db",
+        "sum_buys_usd_window": 8652.134550066708
+      },
+      {
+        "address": "0x2b61256eb10bcd13f186ab3d779fb53114e283c2",
+        "sum_buys_usd_window": 6407.33725505185
+      },
+      {
+        "address": "0x9999b0cdd35d7f3b281ba02efc0d228486940515",
+        "sum_buys_usd_window": 6269.965113392947
+      },
+      {
+        "address": "0x6843e9d53af732985e9af951f7f167ecec3a9fb0",
+        "sum_buys_usd_window": 4200.0
+      },
+      {
+        "address": "0xb6d6cc626e9f6743d90585915c263dba23d6e6a0",
+        "sum_buys_usd_window": 3998.72232132331
+      },
+      {
+        "address": "0xeb756588a219221cf6b69a4e8a3dd1da626abe17",
+        "sum_buys_usd_window": 3907.978365419147
+      },
+      {
+        "address": "0x24f523da04f22e3c5c36ffe811d793f91954b94e",
+        "sum_buys_usd_window": 3878.2825773784225
+      },
+      {
+        "address": "0xe5ada4ffebdffe51c44389d79d61739d11a0b858",
+        "sum_buys_usd_window": 3615.0195345154348
+      },
+      {
+        "address": "0x4f685f96c72ec03543dbac537c72727304d88c7d",
+        "sum_buys_usd_window": 3527.059193051677
+      },
+      {
+        "address": "0xd4fb94469e79ba2dba43c0fc82c8076187f56617",
+        "sum_buys_usd_window": 2564.852411494734
+      },
+      {
+        "address": "0x9a08527667703df9e332637ff0ffeae81bbdf468",
+        "sum_buys_usd_window": 2241.2437499999915
+      },
+      {
+        "address": "0x7eb755ce59653f7023e324310818168961839d12",
+        "sum_buys_usd_window": 2059.431837471926
+      },
+      {
+        "address": "0xc6b60c6b18004ace3eaed736d1acb197b40ad200",
+        "sum_buys_usd_window": 2033.82139873715
+      },
+      {
+        "address": "0x9e6deda3ed0dd5bc2fcec855726560f4e5ef23cb",
+        "sum_buys_usd_window": 2030.3409424750466
+      },
+      {
+        "address": "0xcf7d3acab025eb35f958e29423624ca0cb7730c7",
+        "sum_buys_usd_window": 1485.117376526767
+      },
+      {
+        "address": "0xfa035c4a0666afdbb5d6150aa387489349a07432",
+        "sum_buys_usd_window": 1388.6250715046306
+      },
+      {
+        "address": "0xe4716f4e6f5651b73b94494e8a9488e8c02e7247",
+        "sum_buys_usd_window": 1342.0606519235896
+      },
+      {
+        "address": "0xe83f75907fb4c575414fa6f5cfe8cef24dc5870c",
+        "sum_buys_usd_window": 1337.9825192331227
+      },
+      {
+        "address": "0xf5f053689b61950532662384bdb4a65db69e3287",
+        "sum_buys_usd_window": 1310.812789782344
+      },
+      {
+        "address": "0x260cca0f6c277ce2b79f29c4e6ed49345e24a757",
+        "sum_buys_usd_window": 1215.7385747016249
+      },
+      {
+        "address": "0x9d32095e0031030c5f717400ea490f3490cea7b1",
+        "sum_buys_usd_window": 1191.2407512504915
+      },
+      {
+        "address": "0x5b2895e6f5ecdc238d2d1f3a9a334a5e30b2f6c1",
+        "sum_buys_usd_window": 1136.3753358887127
+      },
+      {
+        "address": "0xcc3051d6e8d606c4a4d51eb514aaf0db679d02f2",
+        "sum_buys_usd_window": 1129.0
+      },
+      {
+        "address": "0x49719d256a5ea16bfa579ea16e95bea9fa41a452",
+        "sum_buys_usd_window": 1080.377
+      },
+      {
+        "address": "0x1303054effd171a4c5bf138a6dab32340f30cb63",
+        "sum_buys_usd_window": 1069.8921983226705
+      },
+      {
+        "address": "0x42e4a3d1ed5d16a204fd8bd79973c4460be3ca0c",
+        "sum_buys_usd_window": 1060.1231000165776
+      },
+      {
+        "address": "0x5d9b85a8835c871435c6295d3bb4de003e957b3b",
+        "sum_buys_usd_window": 1037.7276302808637
+      },
+      {
+        "address": "0xe9f93db3e133c9dcb934f95e9c77f674f8b85f83",
+        "sum_buys_usd_window": 1001.4912834400001
+      },
+      {
+        "address": "0x0fe2ccaa65cd1dce7932ae65abbd786ab7a4fa16",
+        "sum_buys_usd_window": 1001.0106484220356
+      },
+      {
+        "address": "0xe48f79e7cde558bb205c19d68abfbeb24390c834",
+        "sum_buys_usd_window": 1000.0
+      },
+      {
+        "address": "0x7783c3a17589981b14499babc5d59f78a941034f",
+        "sum_buys_usd_window": 1000.0
+      },
+      {
+        "address": "0xaca7cca9e787c830915efaa6afbd8d4815e58032",
+        "sum_buys_usd_window": 993.0172796650036
+      },
+      {
+        "address": "0x18f063eac520ca6760bfca45e528dbf658e15a4b",
+        "sum_buys_usd_window": 991.0241303252449
+      },
+      {
+        "address": "0xabba7bef6dffba87d66e6c3d2d612b1a57df2303",
+        "sum_buys_usd_window": 985.0
+      },
+      {
+        "address": "0x13d9d09757e5219b260cd159a0041620bc50d12d",
+        "sum_buys_usd_window": 976.4846100704584
+      },
+      {
+        "address": "0xb523c9733ffdbbe2c20a52216e4041973ec2e09f",
+        "sum_buys_usd_window": 890.057276957263
+      },
+      {
+        "address": "0xaab44a9bb59ecb56a9fd124c9759db99cea88888",
+        "sum_buys_usd_window": 800.834430133488
+      },
+      {
+        "address": "0x8678f58ac6c4748b5289d0db70e627eef395dead",
+        "sum_buys_usd_window": 750.0
+      },
+      {
+        "address": "0xfdfeba092614739130e0971c358f5737c9a18601",
+        "sum_buys_usd_window": 719.9089089556891
+      },
+      {
+        "address": "0x78fe0fd3bfe2e437e970a3cffd24d5636412e116",
+        "sum_buys_usd_window": 700.0
+      },
+      {
+        "address": "0x9819f29b85e9d2a1b50572c8a9e5c8e3e302effe",
+        "sum_buys_usd_window": 684.7673532480139
+      },
+      {
+        "address": "0x839553e9c58194301341fd3110648e5094e58c73",
+        "sum_buys_usd_window": 683.13108978
+      },
+      {
+        "address": "0xfdff0b569f14af593d446e51b3e42f502124ac85",
+        "sum_buys_usd_window": 678.0025422174621
+      },
+      {
+        "address": "0x06f90d20d54f3028745e4d29fa6650ef4ac1a2fe",
+        "sum_buys_usd_window": 676.3787003691701
+      },
+      {
+        "address": "0x474e07b759dd10bb3894f1ef513071c9da3cfac0",
+        "sum_buys_usd_window": 670.5791766641398
+      },
+      {
+        "address": "0x9729585607568dcbf1f5f3802afbf5b221702932",
+        "sum_buys_usd_window": 657.653724632568
+      },
+      {
+        "address": "0xf43cc02c3e3ef527ce35b77b454c0976a80cce44",
+        "sum_buys_usd_window": 641.185192469559
+      },
+      {
+        "address": "0x099337089cd3a9835fe019bd493732ab65b6f122",
+        "sum_buys_usd_window": 598.8
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+        "sum_transfers_usd_window": 76879.80366233648,
+        "transfers_count_window": 13,
+        "max_transfer_usd_window": 10580.052987361532,
+        "user_name": "Sadness"
+      },
+      {
+        "address": "0xabbeb6e9b9c96a837c99fb9faa908fc7a1df2bc1",
+        "sum_transfers_usd_window": 39305.978222593985,
+        "transfers_count_window": 3,
+        "max_transfer_usd_window": 17704.37149818,
+        "user_name": "Howard the Duck"
+      },
+      {
+        "address": "0xf8cb07f55a79aa30e6a2700b1367b5b78f3ecf06",
+        "sum_transfers_usd_window": 30511.871999065206,
+        "transfers_count_window": 6,
+        "max_transfer_usd_window": 5085.311999844201
+      },
+      {
+        "address": "0x2589ef03d437130607f039cfc2146a1ecf8691ea",
+        "sum_transfers_usd_window": 25303.660242353857,
+        "transfers_count_window": 3,
+        "max_transfer_usd_window": 17704.371507040938
+      },
+      {
+        "address": "0xb249b6e4ac29301f680963a45fac7d09779ef980",
+        "sum_transfers_usd_window": 20556.645747456176,
+        "transfers_count_window": 4,
+        "max_transfer_usd_window": 8685.0284666,
+        "user_name": "Bossi"
+      },
+      {
+        "address": "0x3a6e3f6250b5646a1e94acac47d539906953f0ef",
+        "sum_transfers_usd_window": 17734.92469366677,
+        "transfers_count_window": 3,
+        "max_transfer_usd_window": 7154.871706305241
+      },
+      {
+        "address": "0x1231deb6f5749ef6ce6943a275a1d3e7486f4eae",
+        "sum_transfers_usd_window": 17704.371507040938,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 17704.371507040938
+      },
+      {
+        "address": "0x63242a4ea82847b20e506b63b0e2e2eff0cc6cb0",
+        "sum_transfers_usd_window": 17704.371507040938,
+        "transfers_count_window": 2,
+        "max_transfer_usd_window": 9733.926975430719
+      },
+      {
+        "address": "0x055a3b37957bfbd3345bed9968e7e8dd56d67066",
+        "sum_transfers_usd_window": 9982.793829423399,
+        "transfers_count_window": 2,
+        "max_transfer_usd_window": 5570.270189795599
+      },
+      {
+        "address": "0x4982085c9e2f89f2ecb8131eca71afad896e89cb",
+        "sum_transfers_usd_window": 9214.497128021807,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 9214.497128021807,
+        "user_name": "Avicii"
+      },
+      {
+        "address": "0x2add4ea65c917a166d8b379c80d354205c44240d",
+        "sum_transfers_usd_window": 9214.497128021807,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 9214.497128021807
+      },
+      {
+        "address": "0x7964315379060f853a3cc0e211b94bc788103a74",
+        "sum_transfers_usd_window": 7465.5953317708,
+        "transfers_count_window": 2,
+        "max_transfer_usd_window": 3733.7324658854
+      },
+      {
+        "address": "0xe97b1f053c9118041c9016d83c86deffbf398095",
+        "sum_transfers_usd_window": 7465.5953317708,
+        "transfers_count_window": 2,
+        "max_transfer_usd_window": 3733.7324658854
+      },
+      {
+        "address": "0xb799901ba31d534ea28ca90b49cba8291c2f0911",
+        "sum_transfers_usd_window": 4942.1172658854,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 4942.1172658854
+      },
+      {
+        "address": "0x19113a761706a5914bb272690dc5d691554c12b5",
+        "sum_transfers_usd_window": 4942.1172658854,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 4942.1172658854
+      },
+      {
+        "address": "0x238a358808379702088667322f80ac48bad5e6c4",
+        "sum_transfers_usd_window": 4093.523149136965,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 4093.523149136965
+      },
+      {
+        "address": "0xd7b4cc3aff43736b2ec0a322948e9792920b4d82",
+        "sum_transfers_usd_window": 4093.523149136965,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 4093.523149136965
+      },
+      {
+        "address": "0x886928eb467ef5e69b4ebc2c8af4275b21af41bd",
+        "sum_transfers_usd_window": 3378.1593490963323,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3378.1593490963323,
+        "user_name": "Colle Der Fomento"
+      },
+      {
+        "address": "0x9999b0cdd35d7f3b281ba02efc0d228486940515",
+        "sum_transfers_usd_window": 3378.1593490963323,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3378.1593490963323
+      },
+      {
+        "address": "0x0303e4fe3d5a3d4f225e7690f038786648657b2b",
+        "sum_transfers_usd_window": 3137.268712393389,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3137.268712393389
+      }
+    ]
+  }
+}
