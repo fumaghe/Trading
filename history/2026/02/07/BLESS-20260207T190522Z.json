@@ -1,0 +1,65 @@
+{
+  "ts": "2026-02-07T19:05:22.676717Z",
+  "symbol": "BLESS",
+  "token": "0x7C8217517ed4711fe2DECCdFefFE8d906b9Ae11F",
+  "price_usd": 0.00506,
+  "main_pair_hint": "0x49986efbeEdEa3Ab962CA95caF86919860ECc9DB",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 142,
+    "total_swaps_in_window": 142,
+    "buys_ge_min_usd": 6,
+    "wallet_unici_ge_min_usd": 6,
+    "total_transfers_scanned": 255,
+    "total_transfers_in_window": 255,
+    "transfers_ge_min_usd": 0,
+    "wallet_unici_ge_min_transfers_usd": 0,
+    "candidate_wallets_union": 6,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 6,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 6,
+    "wallet_scartati_old_transfer": 0,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 187,
+    "dexscreener_bucket_sells": 141
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 691.2630565085412,
+    "buyers_unique_all": 6,
+    "transfers_total_usd_window_all": 0.0,
+    "transfers_unique_all": 0,
+    "top_spenders_all": [
+      {
+        "address": "0x6c974238ae3eb73b691bd073d0f58bdded073ce7",
+        "sum_buys_usd_window": 134.25625865991222
+      },
+      {
+        "address": "0xaa8d38d77085f7cb393eeefb06f07cb575ca77cf",
+        "sum_buys_usd_window": 117.86220081135424
+      },
+      {
+        "address": "0xa1db331971a584cee02b73d0d90ba978be395ad1",
+        "sum_buys_usd_window": 116.21482917421898
+      },
+      {
+        "address": "0xe175c89cc58e3a619f30f674626174fb7e4984a8",
+        "sum_buys_usd_window": 110.88028409251045
+      },
+      {
+        "address": "0x6bcd4fa52cc822d309519d28adcfb03ac1163144",
+        "sum_buys_usd_window": 110.46905667023802
+      },
+      {
+        "address": "0xb1decaa0287c6a9918a45fbe1d00c76f885a0fb5",
+        "sum_buys_usd_window": 101.58042710030729
+      }
+    ],
+    "top_transfers_all": []
+  }
+}
