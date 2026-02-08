@@ -1,0 +1,106 @@
+{
+  "ts": "2026-02-08T03:43:42.625570Z",
+  "symbol": "AIO",
+  "token": "0x81a7DA4074b8e0eD51beA40f9dCbDF4d9d4832b4",
+  "price_usd": 0.0685,
+  "main_pair_hint": "0x97620e003c03381EaCBDE7135F28d94303bb5672",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 306,
+    "total_swaps_in_window": 306,
+    "buys_ge_min_usd": 124,
+    "wallet_unici_ge_min_usd": 11,
+    "total_transfers_scanned": 949,
+    "total_transfers_in_window": 949,
+    "transfers_ge_min_usd": 108,
+    "wallet_unici_ge_min_transfers_usd": 3,
+    "candidate_wallets_union": 14,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 14,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 11,
+    "wallet_scartati_old_transfer": 3,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 179,
+    "dexscreener_bucket_sells": 153
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 79363.64998566851,
+    "buyers_unique_all": 11,
+    "transfers_total_usd_window_all": 335914.05662351946,
+    "transfers_unique_all": 3,
+    "top_spenders_all": [
+      {
+        "address": "0x5ddf9200ca8163585d1d9b05022adc14c32a71f1",
+        "sum_buys_usd_window": 9216.946980212795
+      },
+      {
+        "address": "0x87866aa14c37306ef3ee49468f79f4e0e1cc52f6",
+        "sum_buys_usd_window": 9108.523446257914
+      },
+      {
+        "address": "0xb94741fb32409f914c67d161efa718815c038b3f",
+        "sum_buys_usd_window": 8531.855773766041
+      },
+      {
+        "address": "0xda728a2e3c413b905b90d626e7d942435f80fc38",
+        "sum_buys_usd_window": 8381.9581750125
+      },
+      {
+        "address": "0x3d6035e23ce306a0b3dd23977f6aa904c9bd3154",
+        "sum_buys_usd_window": 8240.094349040079
+      },
+      {
+        "address": "0xac30203cb479ee89696d9e7ec98dca08fd538065",
+        "sum_buys_usd_window": 7909.0876340179075
+      },
+      {
+        "address": "0xb6e27c34a794d04e8e078b46cb38093be26f0516",
+        "sum_buys_usd_window": 7902.428028317467
+      },
+      {
+        "address": "0x45a2e455b2f7054f02317533057ed60196c90f73",
+        "sum_buys_usd_window": 7071.006033016418
+      },
+      {
+        "address": "0xdfc1db4904dc1e7718d4783bd4be02ac1967ae86",
+        "sum_buys_usd_window": 6913.238184636982
+      },
+      {
+        "address": "0x6e1b2a5bc88227d7067b4d02ef82dd1b8c4fcd7b",
+        "sum_buys_usd_window": 5941.235228155143
+      },
+      {
+        "address": "0x0000000004a8adcba2cedf31014de276a7203140",
+        "sum_buys_usd_window": 147.2761532352689
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0x099bcb99d375027295a713fce771545fa2793c98",
+        "sum_transfers_usd_window": 167957.02831175976,
+        "transfers_count_window": 54,
+        "max_transfer_usd_window": 3130.2807022879415
+      },
+      {
+        "address": "0x5a23b8f2ed7a15d38923a8fbd84df2c8a18c0f48",
+        "sum_transfers_usd_window": 83979.55420396835,
+        "transfers_count_window": 27,
+        "max_transfer_usd_window": 3130.2807022879415,
+        "user_name": "Raiden Thunder God"
+      },
+      {
+        "address": "0x28e2ea090877bf75740558f6bfb36a5ffee9e9df",
+        "sum_transfers_usd_window": 83977.47410779136,
+        "transfers_count_window": 27,
+        "max_transfer_usd_window": 3130.2807022879415,
+        "user_name": "Captain Boomerang"
+      }
+    ]
+  }
+}
