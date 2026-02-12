@@ -1,0 +1,65 @@
+{
+  "ts": "2026-02-12T09:47:28.279059Z",
+  "symbol": "IRYS",
+  "token": "0x91152B4Ef635403efBAe860edD0F8c321d7c035d",
+  "price_usd": 0.04661,
+  "main_pair_hint": "0x73de8b8D37fAc1aFe156f6533788A0efF197D636",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 115,
+    "total_swaps_in_window": 115,
+    "buys_ge_min_usd": 6,
+    "wallet_unici_ge_min_usd": 6,
+    "total_transfers_scanned": 288,
+    "total_transfers_in_window": 288,
+    "transfers_ge_min_usd": 0,
+    "wallet_unici_ge_min_transfers_usd": 0,
+    "candidate_wallets_union": 6,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 6,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 6,
+    "wallet_scartati_old_transfer": 0,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 200,
+    "dexscreener_bucket_sells": 220
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 1073.812235650901,
+    "buyers_unique_all": 6,
+    "transfers_total_usd_window_all": 0.0,
+    "transfers_unique_all": 0,
+    "top_spenders_all": [
+      {
+        "address": "0x4a51a186eba3cd1faba8a3d24975970b5b052aca",
+        "sum_buys_usd_window": 179.27984159616977
+      },
+      {
+        "address": "0x159412e93e9c1104f26c12f433350269d63db5d2",
+        "sum_buys_usd_window": 179.19742992690288
+      },
+      {
+        "address": "0xdbe5eb0b7c42bdba4d2fac86213be9f9fa3cb5fe",
+        "sum_buys_usd_window": 178.9911751648734
+      },
+      {
+        "address": "0x407f55ade1d4202fc3c6936377dae6a423ddb773",
+        "sum_buys_usd_window": 178.90474384000916
+      },
+      {
+        "address": "0x7c65aeaad1ce158095ef5ac0e7321392886c15f8",
+        "sum_buys_usd_window": 178.8492792894786
+      },
+      {
+        "address": "0x0a9aae4fa861caad325b0c61d4f08cdba207f7b7",
+        "sum_buys_usd_window": 178.5897658334671
+      }
+    ],
+    "top_transfers_all": []
+  }
+}
