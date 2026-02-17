@@ -1,0 +1,68 @@
+{
+  "ts": "2026-02-17T21:07:42.811863Z",
+  "symbol": "BLESS",
+  "token": "0x7C8217517ed4711fe2DECCdFefFE8d906b9Ae11F",
+  "price_usd": 0.00555,
+  "main_pair_hint": "0x49986efbeEdEa3Ab962CA95caF86919860ECc9DB",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 63,
+    "total_swaps_in_window": 63,
+    "buys_ge_min_usd": 5,
+    "wallet_unici_ge_min_usd": 5,
+    "total_transfers_scanned": 127,
+    "total_transfers_in_window": 127,
+    "transfers_ge_min_usd": 1,
+    "wallet_unici_ge_min_transfers_usd": 1,
+    "candidate_wallets_union": 6,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 6,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 5,
+    "wallet_scartati_old_transfer": 1,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 72,
+    "dexscreener_bucket_sells": 61
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 2358.0252252266378,
+    "buyers_unique_all": 5,
+    "transfers_total_usd_window_all": 7965.226840828271,
+    "transfers_unique_all": 1,
+    "top_spenders_all": [
+      {
+        "address": "0xdef7b2082272f32cecf712592d38c409f25120ce",
+        "sum_buys_usd_window": 883.1106188081293
+      },
+      {
+        "address": "0x7e83efedd4f854fc1adf03bdce44b958fc19cf46",
+        "sum_buys_usd_window": 871.7070299699466
+      },
+      {
+        "address": "0x0665a3b74523c94e4b14d05593d8f53cbf7bb897",
+        "sum_buys_usd_window": 362.04593368068294
+      },
+      {
+        "address": "0x7eb755ce59653f7023e324310818168961839d12",
+        "sum_buys_usd_window": 123.84410992669335
+      },
+      {
+        "address": "0x6bcd4fa52cc822d309519d28adcfb03ac1163144",
+        "sum_buys_usd_window": 117.3175328411857
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0xcb98c1e66b7ac455621e3539fa6d0fb94b08d19e",
+        "sum_transfers_usd_window": 7965.226840828271,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 7965.226840828271
+      }
+    ]
+  }
+}
