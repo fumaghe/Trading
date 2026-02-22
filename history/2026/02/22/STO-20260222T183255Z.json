@@ -1,0 +1,109 @@
+{
+  "ts": "2026-02-22T18:32:55.656400Z",
+  "symbol": "STO",
+  "token": "0xdAf1695c41327b61B9b9965Ac6A5843A3198cf07",
+  "price_usd": 0.05931,
+  "main_pair_hint": "0x2ad2651A07b4949C0F892CFa27C3C73fb3b020f6",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 24,
+    "total_swaps_in_window": 24,
+    "buys_ge_min_usd": 9,
+    "wallet_unici_ge_min_usd": 6,
+    "total_transfers_scanned": 158,
+    "total_transfers_in_window": 158,
+    "transfers_ge_min_usd": 13,
+    "wallet_unici_ge_min_transfers_usd": 7,
+    "candidate_wallets_union": 13,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 13,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 6,
+    "wallet_scartati_old_transfer": 7,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 45,
+    "dexscreener_bucket_sells": 121
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 1831.5278800437927,
+    "buyers_unique_all": 6,
+    "transfers_total_usd_window_all": 70598.5259250677,
+    "transfers_unique_all": 7,
+    "top_spenders_all": [
+      {
+        "address": "0x595db43fb04e1422222ecb327d98ddafdc814241",
+        "sum_buys_usd_window": 787.3787539942169
+      },
+      {
+        "address": "0xcdc37db95fbd5b1b0134ca36132b050d8b1fe86c",
+        "sum_buys_usd_window": 410.3499401068426
+      },
+      {
+        "address": "0x1ba85bd1feebb318794c0c93a7a3f7ff86727ca8",
+        "sum_buys_usd_window": 183.4320323890359
+      },
+      {
+        "address": "0xc460b4990d05bc4537602b29c15ab8b6089cd71e",
+        "sum_buys_usd_window": 182.4511362714534
+      },
+      {
+        "address": "0x5e27758ff99a31cf2534e471000370066b293f9d",
+        "sum_buys_usd_window": 136.00594851822999
+      },
+      {
+        "address": "0x80a5d8b07e6c65eb8691ebcdfcb1d916ef815f99",
+        "sum_buys_usd_window": 131.91006876401394
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0x8894e0a0c962cb723c1976a4421c95949be2d4e3",
+        "sum_transfers_usd_window": 38937.94221178929,
+        "transfers_count_window": 5,
+        "max_transfer_usd_window": 11720.798224593384
+      },
+      {
+        "address": "0xe6861d9579c12f85516f63ada6e4d45a74f63fc8",
+        "sum_transfers_usd_window": 7824.020009921363,
+        "transfers_count_window": 2,
+        "max_transfer_usd_window": 3930.8120264183813
+      },
+      {
+        "address": "0xee845948e6806d12e966137caa07d49bbe632fe3",
+        "sum_transfers_usd_window": 6642.410287205963,
+        "transfers_count_window": 2,
+        "max_transfer_usd_window": 3601.7414436029817
+      },
+      {
+        "address": "0x228b111352cc29263370ecdb712c51af18e6eb47",
+        "sum_transfers_usd_window": 5037.35540554728,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 5037.35540554728
+      },
+      {
+        "address": "0xa1d340fbc92da0fecd7d92ff677f1e0a97469f07",
+        "sum_transfers_usd_window": 4803.584326834464,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 4803.584326834464
+      },
+      {
+        "address": "0x0a944c5984b440090193197fb9ea4b57313ff510",
+        "sum_transfers_usd_window": 3893.1925341933834,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3893.1925341933834
+      },
+      {
+        "address": "0x4982085c9e2f89f2ecb8131eca71afad896e89cb",
+        "sum_transfers_usd_window": 3460.0211495759627,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3460.0211495759627,
+        "user_name": "Avicii"
+      }
+    ]
+  }
+}
