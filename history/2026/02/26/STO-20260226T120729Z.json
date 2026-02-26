@@ -1,0 +1,65 @@
+{
+  "ts": "2026-02-26T12:07:29.626265Z",
+  "symbol": "STO",
+  "token": "0xdAf1695c41327b61B9b9965Ac6A5843A3198cf07",
+  "price_usd": 0.0594,
+  "main_pair_hint": "0x2ad2651A07b4949C0F892CFa27C3C73fb3b020f6",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 50,
+    "total_swaps_in_window": 50,
+    "buys_ge_min_usd": 15,
+    "wallet_unici_ge_min_usd": 6,
+    "total_transfers_scanned": 60,
+    "total_transfers_in_window": 60,
+    "transfers_ge_min_usd": 0,
+    "wallet_unici_ge_min_transfers_usd": 0,
+    "candidate_wallets_union": 6,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 6,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 6,
+    "wallet_scartati_old_transfer": 0,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 50,
+    "dexscreener_bucket_sells": 0
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 2131.903261565687,
+    "buyers_unique_all": 6,
+    "transfers_total_usd_window_all": 0.0,
+    "transfers_unique_all": 0,
+    "top_spenders_all": [
+      {
+        "address": "0x5e27758ff99a31cf2534e471000370066b293f9d",
+        "sum_buys_usd_window": 860.190876848436
+      },
+      {
+        "address": "0x595db43fb04e1422222ecb327d98ddafdc814241",
+        "sum_buys_usd_window": 764.951254274724
+      },
+      {
+        "address": "0xabba7bef6dffba87d66e6c3d2d612b1a57df2303",
+        "sum_buys_usd_window": 175.29331886284618
+      },
+      {
+        "address": "0x88435ae679fd9ba7ac39ea9c715e8ad69b5812e6",
+        "sum_buys_usd_window": 114.45599629211449
+      },
+      {
+        "address": "0xca067ac394e884a73e36014648fd00fa0e18c056",
+        "sum_buys_usd_window": 113.83752191603374
+      },
+      {
+        "address": "0x003fed217af94e38b3f84e70276ebd91f7c37923",
+        "sum_buys_usd_window": 103.17429337153263
+      }
+    ],
+    "top_transfers_all": []
+  }
+}
