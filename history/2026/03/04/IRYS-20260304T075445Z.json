@@ -1,0 +1,83 @@
+{
+  "ts": "2026-03-04T07:54:45.423013Z",
+  "symbol": "IRYS",
+  "token": "0x91152B4Ef635403efBAe860edD0F8c321d7c035d",
+  "price_usd": 0.01974,
+  "main_pair_hint": "0x73de8b8D37fAc1aFe156f6533788A0efF197D636",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 143,
+    "total_swaps_in_window": 143,
+    "buys_ge_min_usd": 7,
+    "wallet_unici_ge_min_usd": 7,
+    "total_transfers_scanned": 285,
+    "total_transfers_in_window": 285,
+    "transfers_ge_min_usd": 2,
+    "wallet_unici_ge_min_transfers_usd": 2,
+    "candidate_wallets_union": 9,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 1,
+    "wallet_valutati_topk": 9,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 7,
+    "wallet_scartati_old_transfer": 1,
+    "wallet_scartati_low_balance_usd": 1,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 132,
+    "dexscreener_bucket_sells": 121
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 876.0141421513874,
+    "buyers_unique_all": 7,
+    "transfers_total_usd_window_all": 6316.8,
+    "transfers_unique_all": 2,
+    "top_spenders_all": [
+      {
+        "address": "0x506d819537da75a4bfad931f0d8af116f06a99b2",
+        "sum_buys_usd_window": 150.15795445282635
+      },
+      {
+        "address": "0xddb793c1fc882001ad3dc5257c934e4243592357",
+        "sum_buys_usd_window": 149.09445199406878
+      },
+      {
+        "address": "0x7fed89090a6302af49af8c14420333bbf3a1d911",
+        "sum_buys_usd_window": 115.6049942679126
+      },
+      {
+        "address": "0x4f44a1e5e0f605e9a93ca4869eac9c2acdd5bec2",
+        "sum_buys_usd_window": 115.55705440130039
+      },
+      {
+        "address": "0x4a31e6a0f266645eabe3c097e656679c01c5536d",
+        "sum_buys_usd_window": 115.44607020439882
+      },
+      {
+        "address": "0x147efb45237145d8245c05f95acfea9eeba90777",
+        "sum_buys_usd_window": 115.28992590814354
+      },
+      {
+        "address": "0x6f247c116b4049b889fc345c6e07f2ad73b35eae",
+        "sum_buys_usd_window": 114.863690922737
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0x4982085c9e2f89f2ecb8131eca71afad896e89cb",
+        "sum_transfers_usd_window": 3158.4,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3158.4,
+        "user_name": "Avicii"
+      },
+      {
+        "address": "0xe25be731a16d3aefe95cc3f64ca3d8ce87ef6f78",
+        "sum_transfers_usd_window": 3158.4,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3158.4
+      }
+    ]
+  }
+}
