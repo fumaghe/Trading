@@ -1,0 +1,65 @@
+{
+  "ts": "2026-03-07T06:37:47.005166Z",
+  "symbol": "B2",
+  "token": "0x783c3f003f172c6Ac5AC700218a357d2D66Ee2a2",
+  "price_usd": 0.7006,
+  "main_pair_hint": "0xc1A780989734a0e5df875cEbe410748562e1c5e6",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 18,
+    "total_swaps_in_window": 18,
+    "buys_ge_min_usd": 6,
+    "wallet_unici_ge_min_usd": 6,
+    "total_transfers_scanned": 32,
+    "total_transfers_in_window": 32,
+    "transfers_ge_min_usd": 0,
+    "wallet_unici_ge_min_transfers_usd": 0,
+    "candidate_wallets_union": 6,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 6,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 6,
+    "wallet_scartati_old_transfer": 0,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 20,
+    "dexscreener_bucket_sells": 25
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 1000.5340531663735,
+    "buyers_unique_all": 6,
+    "transfers_total_usd_window_all": 0.0,
+    "transfers_unique_all": 0,
+    "top_spenders_all": [
+      {
+        "address": "0xfe89f842876a3709d618904b21f42049de7cabf0",
+        "sum_buys_usd_window": 377.70346222592076
+      },
+      {
+        "address": "0x7a0b46a0e038ce8144f58f412a294dac7c9db18c",
+        "sum_buys_usd_window": 196.45017201527375
+      },
+      {
+        "address": "0x230403372a79703986f3e20822215547fb34b60a",
+        "sum_buys_usd_window": 109.42193945246099
+      },
+      {
+        "address": "0x689a81f92ef752ffeab2a9b17ad2d3c88d21b593",
+        "sum_buys_usd_window": 108.40994275472751
+      },
+      {
+        "address": "0xb578314a1cd4e81284405638a6bed9597b43f9e1",
+        "sum_buys_usd_window": 107.91521545606136
+      },
+      {
+        "address": "0x2a201998350dc41f5c71d83d6e8decbd0badf801",
+        "sum_buys_usd_window": 100.63332126192918
+      }
+    ],
+    "top_transfers_all": []
+  }
+}
