@@ -1,0 +1,69 @@
+{
+  "ts": "2026-03-09T17:13:15.813429Z",
+  "symbol": "KGEN",
+  "token": "0xF3d5b4c34Ed623478cc5141861776E6cf7AE3A1E",
+  "price_usd": 0.2057,
+  "main_pair_hint": "0x81965714e2A1EC25fB8BcB3DE60a11FE6bCA929a",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 45,
+    "total_swaps_in_window": 45,
+    "buys_ge_min_usd": 9,
+    "wallet_unici_ge_min_usd": 7,
+    "total_transfers_scanned": 109,
+    "total_transfers_in_window": 109,
+    "transfers_ge_min_usd": 0,
+    "wallet_unici_ge_min_transfers_usd": 0,
+    "candidate_wallets_union": 7,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 7,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 7,
+    "wallet_scartati_old_transfer": 0,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 11,
+    "dexscreener_bucket_sells": 11
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 2172.2551791335286,
+    "buyers_unique_all": 7,
+    "transfers_total_usd_window_all": 0.0,
+    "transfers_unique_all": 0,
+    "top_spenders_all": [
+      {
+        "address": "0xfbbf6ae22ed6d9225f2cfadf80b7f01d7116da4f",
+        "sum_buys_usd_window": 1204.1546805576163
+      },
+      {
+        "address": "0x1260b9c6c5a2d5d7e59a5d529c21d8f245dc573f",
+        "sum_buys_usd_window": 249.18907341172664
+      },
+      {
+        "address": "0x6f20bfba6bbe41b10e488a40dc656f5f7dfaf240",
+        "sum_buys_usd_window": 218.7040019169474
+      },
+      {
+        "address": "0x04fcd8177dc58191e357a2d479949567856b7323",
+        "sum_buys_usd_window": 176.08668713276828
+      },
+      {
+        "address": "0xdbe5eb0b7c42bdba4d2fac86213be9f9fa3cb5fe",
+        "sum_buys_usd_window": 109.34648855692784
+      },
+      {
+        "address": "0x7fed89090a6302af49af8c14420333bbf3a1d911",
+        "sum_buys_usd_window": 109.2288880917558
+      },
+      {
+        "address": "0xb32e38df51587fe41fb343943a370dfc7a3d1f05",
+        "sum_buys_usd_window": 105.54535946578633
+      }
+    ],
+    "top_transfers_all": []
+  }
+}
