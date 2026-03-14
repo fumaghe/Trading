@@ -79,11 +79,12 @@ jobs:
           TOKENS["KGEN"]="0xF3d5b4c34Ed623478cc5141861776E6cf7AE3A1E"
           TOKENS["CYS"]="0x0C69199C1562233640e0Db5Ce2c399A88eB507C7"
           TOKENS["BTR"]="0x787abd73593bed588852163402d191c302c7f8b6"
+          TOKENS["UAI"]="0x3E5d4f8aee0D9B3082d5f6DA5D6e225D17ba9ea0"
 
           mkdir -p out
 
           EXIT_CODE=0
-          for SYM in IRYS AIO B2 RIVER BLESS STO KGEN CYS BTR; do
+          for SYM in IRYS AIO B2 RIVER BLESS STO KGEN CYS BTR UAI; do
             ADDR="${TOKENS[$SYM]}"
             echo "Running ${SYM} (${ADDR})"
             CMD="python young_whale_finder.py \
@@ -184,8 +185,8 @@ jobs:
                   transfers = r.get("sum_transfers_usd_window")
                   tmax = r.get("max_transfer_usd_window")
                   tcnt = r.get("transfers_count_window")
-                  tiso = r.get("last_transfer_iso_window") 
-                  tts = r.get("last_transfer_ts_window") 
+                  tiso = r.get("last_transfer_iso_window")
+                  tts = r.get("last_transfer_ts_window")
 
                   first_ts = r.get("first_tx_ts")
                   age_line = ""
@@ -221,7 +222,6 @@ jobs:
 
                       suffix = f" ({', '.join(extra)})" if extra else ""
                       lines.append(f"🟣 TRANSFER in ingresso: <b>{fmt_money(transfers)}</b>{suffix}")
-
 
                   # Always show balance + wallet
                   lines.append(f"Balance USD: <b>{fmt_money(balu)}</b>")
@@ -316,7 +316,7 @@ jobs:
                   with open(f, "r", encoding="utf-8") as fh:
                       j = json.load(fh)
               except Exception as e:
-                  print(f("[DEBUG] skip {f}: {e}"))
+                  print(f"[DEBUG] skip {f}: {e}")
                   continue
 
               if isinstance(j, dict) and j.get("error"):
