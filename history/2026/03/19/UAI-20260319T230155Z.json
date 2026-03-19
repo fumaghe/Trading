@@ -1,0 +1,73 @@
+{
+  "ts": "2026-03-19T23:01:55.973765Z",
+  "symbol": "UAI",
+  "token": "0x3E5d4f8aee0D9B3082d5f6DA5D6e225D17ba9ea0",
+  "price_usd": 0.5955,
+  "main_pair_hint": "0x82ED13117144344B39e5ec74d614D54465897a24",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 49,
+    "total_swaps_in_window": 49,
+    "buys_ge_min_usd": 0,
+    "wallet_unici_ge_min_usd": 0,
+    "total_transfers_scanned": 156,
+    "total_transfers_in_window": 156,
+    "transfers_ge_min_usd": 5,
+    "wallet_unici_ge_min_transfers_usd": 5,
+    "candidate_wallets_union": 5,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 1,
+    "wallet_valutati_topk": 5,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 0,
+    "wallet_scartati_old_transfer": 4,
+    "wallet_scartati_low_balance_usd": 1,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 51,
+    "dexscreener_bucket_sells": 40
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 0.0,
+    "buyers_unique_all": 0,
+    "transfers_total_usd_window_all": 36960.60122148712,
+    "transfers_unique_all": 5,
+    "top_spenders_all": [],
+    "top_transfers_all": [
+      {
+        "address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+        "sum_transfers_usd_window": 12050.55636522,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 12050.55636522,
+        "user_name": "Sadness"
+      },
+      {
+        "address": "0xe3b26407e43da88e600ae9a4156fa498780576de",
+        "sum_transfers_usd_window": 12050.55636522,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 12050.55636522
+      },
+      {
+        "address": "0xffa8db7b38579e6a2d14f9b347a9ace4d044cd54",
+        "sum_transfers_usd_window": 6614.638007972565,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 6614.638007972565,
+        "user_name": "Demon’s Souls"
+      },
+      {
+        "address": "0x80a65923c27924f0b91f6d5b7f7048f87c21e91c",
+        "sum_transfers_usd_window": 3122.4252415372803,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3122.4252415372803
+      },
+      {
+        "address": "0xdc949e168631246d05d0b12c6ac9573d2e8da185",
+        "sum_transfers_usd_window": 3122.4252415372803,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3122.4252415372803
+      }
+    ]
+  }
+}

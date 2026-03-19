@@ -1,0 +1,90 @@
+{
+  "ts": "2026-03-19T23:01:55.973765Z",
+  "symbol": "STO",
+  "token": "0xdAf1695c41327b61B9b9965Ac6A5843A3198cf07",
+  "price_usd": 0.09332,
+  "main_pair_hint": "0x2ad2651A07b4949C0F892CFa27C3C73fb3b020f6",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 44,
+    "total_swaps_in_window": 44,
+    "buys_ge_min_usd": 10,
+    "wallet_unici_ge_min_usd": 7,
+    "total_transfers_scanned": 146,
+    "total_transfers_in_window": 146,
+    "transfers_ge_min_usd": 4,
+    "wallet_unici_ge_min_transfers_usd": 3,
+    "candidate_wallets_union": 10,
+    "eligible_buy_candidates": 1,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 10,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 6,
+    "wallet_scartati_old_transfer": 3,
+    "wallet_scartati_low_balance_usd": 1,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 127,
+    "dexscreener_bucket_sells": 102
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 1771.5376187749623,
+    "buyers_unique_all": 7,
+    "transfers_total_usd_window_all": 74525.26917700595,
+    "transfers_unique_all": 3,
+    "top_spenders_all": [
+      {
+        "address": "0x595db43fb04e1422222ecb327d98ddafdc814241",
+        "sum_buys_usd_window": 606.5443265192764
+      },
+      {
+        "address": "0xa12fe8df021ec5f845ab041b82d09b55b03dd8f1",
+        "sum_buys_usd_window": 318.5358513327464
+      },
+      {
+        "address": "0xfd243d1e508e4627f4e121a97f2675cd6924662c",
+        "sum_buys_usd_window": 234.874819491604
+      },
+      {
+        "address": "0x445b179925905671ad944008958ad4809b832911",
+        "sum_buys_usd_window": 227.10865094009662
+      },
+      {
+        "address": "0xcdc37db95fbd5b1b0134ca36132b050d8b1fe86c",
+        "sum_buys_usd_window": 141.44939925452758
+      },
+      {
+        "address": "0x18fb33a47fe93b464fc9ea766452e7a60ed29ca2",
+        "sum_buys_usd_window": 125.53326963265273
+      },
+      {
+        "address": "0xca067ac394e884a73e36014648fd00fa0e18c056",
+        "sum_buys_usd_window": 117.49130160405855
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0xe2fc31f816a9b94326492132018c3aecc4a93ae1",
+        "sum_transfers_usd_window": 53609.00290851667,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 53609.00290851667,
+        "user_name": "Aladdin"
+      },
+      {
+        "address": "0xffa8db7b38579e6a2d14f9b347a9ace4d044cd54",
+        "sum_transfers_usd_window": 13199.008358089277,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 13199.008358089277,
+        "user_name": "Demon’s Souls"
+      },
+      {
+        "address": "0x8894e0a0c962cb723c1976a4421c95949be2d4e3",
+        "sum_transfers_usd_window": 7717.2579104,
+        "transfers_count_window": 2,
+        "max_transfer_usd_window": 4201.1936104
+      }
+    ]
+  }
+}
