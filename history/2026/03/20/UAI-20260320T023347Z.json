@@ -1,0 +1,76 @@
+{
+  "ts": "2026-03-20T02:33:47.844933Z",
+  "symbol": "UAI",
+  "token": "0x3E5d4f8aee0D9B3082d5f6DA5D6e225D17ba9ea0",
+  "price_usd": 0.5797,
+  "main_pair_hint": "0x82ED13117144344B39e5ec74d614D54465897a24",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 100,
+    "total_swaps_in_window": 100,
+    "buys_ge_min_usd": 4,
+    "wallet_unici_ge_min_usd": 4,
+    "total_transfers_scanned": 276,
+    "total_transfers_in_window": 276,
+    "transfers_ge_min_usd": 3,
+    "wallet_unici_ge_min_transfers_usd": 3,
+    "candidate_wallets_union": 7,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 7,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 4,
+    "wallet_scartati_old_transfer": 3,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 58,
+    "dexscreener_bucket_sells": 59
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 487.67618249224535,
+    "buyers_unique_all": 4,
+    "transfers_total_usd_window_all": 103277.27866656368,
+    "transfers_unique_all": 3,
+    "top_spenders_all": [
+      {
+        "address": "0xd0efcbec312871695d0aa17fcb0e80167a3fb474",
+        "sum_buys_usd_window": 144.24207824589323
+      },
+      {
+        "address": "0x8a937bd654599aff2e8757074584f4da93b5a844",
+        "sum_buys_usd_window": 117.80875754694821
+      },
+      {
+        "address": "0x912ccbce20f38d9121170a5339dfa482530ca317",
+        "sum_buys_usd_window": 117.62933445193217
+      },
+      {
+        "address": "0xf6688ce0f06bebaf4c33e68fff909af722ad6f7e",
+        "sum_buys_usd_window": 107.99601224747174
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0x8dac80ce96f69f9762bc450faa4d7fbd5891ae18",
+        "sum_transfers_usd_window": 81292.75847486369,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 81292.75847486369
+      },
+      {
+        "address": "0x2b3bf74b29f59fb8dda41cf3d6a8da28cf8e7921",
+        "sum_transfers_usd_window": 10992.26009585,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 10992.26009585
+      },
+      {
+        "address": "0x1474f48ed18a87b2d73d44a9e38e5094c8360f49",
+        "sum_transfers_usd_window": 10992.26009585,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 10992.26009585
+      }
+    ]
+  }
+}
