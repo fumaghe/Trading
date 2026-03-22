@@ -1,0 +1,77 @@
+{
+  "ts": "2026-03-22T14:26:44.582937Z",
+  "symbol": "BLESS",
+  "token": "0x7C8217517ed4711fe2DECCdFefFE8d906b9Ae11F",
+  "price_usd": 0.005629,
+  "main_pair_hint": "0x49986efbeEdEa3Ab962CA95caF86919860ECc9DB",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 160,
+    "total_swaps_in_window": 160,
+    "buys_ge_min_usd": 9,
+    "wallet_unici_ge_min_usd": 9,
+    "total_transfers_scanned": 292,
+    "total_transfers_in_window": 292,
+    "transfers_ge_min_usd": 0,
+    "wallet_unici_ge_min_transfers_usd": 0,
+    "candidate_wallets_union": 9,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 9,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 9,
+    "wallet_scartati_old_transfer": 0,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 192,
+    "dexscreener_bucket_sells": 171
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 1372.4047512701577,
+    "buyers_unique_all": 9,
+    "transfers_total_usd_window_all": 0.0,
+    "transfers_unique_all": 0,
+    "top_spenders_all": [
+      {
+        "address": "0x279da64f5fc327b437e80179ae2f80c85afcff59",
+        "sum_buys_usd_window": 202.4073302060414
+      },
+      {
+        "address": "0xf6d4b3e48602d43b6c000b58f0e26075d21f11a8",
+        "sum_buys_usd_window": 197.75802810611148
+      },
+      {
+        "address": "0x0e06ac8dd643b315516fc9c12c2d117cd150ecb3",
+        "sum_buys_usd_window": 165.28486174574016
+      },
+      {
+        "address": "0x565a56f172f4c1b393b072a11b7200ef4a9ef250",
+        "sum_buys_usd_window": 152.6603843085949
+      },
+      {
+        "address": "0xbc8be91e89d38423e9e56f00bbeb92439d6b3004",
+        "sum_buys_usd_window": 141.26152009451448
+      },
+      {
+        "address": "0x1412af0bf7ae2dc372a46fc2b12b5676271401f2",
+        "sum_buys_usd_window": 134.12060588828484
+      },
+      {
+        "address": "0x38642b64a3c30203cd5888aa62cf285f6ed29aa3",
+        "sum_buys_usd_window": 131.8745949362533
+      },
+      {
+        "address": "0x95ccd79a2e487a721376eaad40f7785273ee29ff",
+        "sum_buys_usd_window": 126.21933442676615
+      },
+      {
+        "address": "0x37af9a89a4d190e26e3e568add0f9c7e55fece51",
+        "sum_buys_usd_window": 120.8180915578511
+      }
+    ],
+    "top_transfers_all": []
+  }
+}

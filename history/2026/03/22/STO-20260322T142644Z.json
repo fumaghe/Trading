@@ -1,0 +1,83 @@
+{
+  "ts": "2026-03-22T14:26:44.582937Z",
+  "symbol": "STO",
+  "token": "0xdAf1695c41327b61B9b9965Ac6A5843A3198cf07",
+  "price_usd": 0.1035,
+  "main_pair_hint": "0x2ad2651A07b4949C0F892CFa27C3C73fb3b020f6",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 14,
+    "total_swaps_in_window": 14,
+    "buys_ge_min_usd": 4,
+    "wallet_unici_ge_min_usd": 4,
+    "total_transfers_scanned": 65,
+    "total_transfers_in_window": 65,
+    "transfers_ge_min_usd": 4,
+    "wallet_unici_ge_min_transfers_usd": 4,
+    "candidate_wallets_union": 8,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 8,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 4,
+    "wallet_scartati_old_transfer": 4,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 31,
+    "dexscreener_bucket_sells": 31
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 1226.6583349576356,
+    "buyers_unique_all": 4,
+    "transfers_total_usd_window_all": 17932.3811856,
+    "transfers_unique_all": 4,
+    "top_spenders_all": [
+      {
+        "address": "0x2acbe7e9a41690af1353d0ce2991748ecd8b6e6c",
+        "sum_buys_usd_window": 436.12457773128693
+      },
+      {
+        "address": "0x595db43fb04e1422222ecb327d98ddafdc814241",
+        "sum_buys_usd_window": 339.413365285636
+      },
+      {
+        "address": "0x61a947b31b1b2ff468e5968288b454261f85a3b5",
+        "sum_buys_usd_window": 251.7459308039406
+      },
+      {
+        "address": "0xb07e31f225fa27002a964269adc6bc34bf67a0b7",
+        "sum_buys_usd_window": 199.374461136772
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0x8894e0a0c962cb723c1976a4421c95949be2d4e3",
+        "sum_transfers_usd_window": 5860.740388499999,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 5860.740388499999
+      },
+      {
+        "address": "0x06fd4ba7973a0d39a91734bbc35bc2bcaa99e3b0",
+        "sum_transfers_usd_window": 5860.740388499999,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 5860.740388499999
+      },
+      {
+        "address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+        "sum_transfers_usd_window": 3105.4502042999998,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3105.4502042999998,
+        "user_name": "Sadness"
+      },
+      {
+        "address": "0x462728871225e2978d4e1edc6d15983caf8f0d0a",
+        "sum_transfers_usd_window": 3105.4502042999998,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3105.4502042999998
+      }
+    ]
+  }
+}
