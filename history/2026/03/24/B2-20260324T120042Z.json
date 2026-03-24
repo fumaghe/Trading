@@ -1,0 +1,65 @@
+{
+  "ts": "2026-03-24T12:00:42.597818Z",
+  "symbol": "B2",
+  "token": "0x783c3f003f172c6Ac5AC700218a357d2D66Ee2a2",
+  "price_usd": 0.7304,
+  "main_pair_hint": "0xc1A780989734a0e5df875cEbe410748562e1c5e6",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 42,
+    "total_swaps_in_window": 42,
+    "buys_ge_min_usd": 6,
+    "wallet_unici_ge_min_usd": 6,
+    "total_transfers_scanned": 101,
+    "total_transfers_in_window": 101,
+    "transfers_ge_min_usd": 0,
+    "wallet_unici_ge_min_transfers_usd": 0,
+    "candidate_wallets_union": 6,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 6,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 6,
+    "wallet_scartati_old_transfer": 0,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 57,
+    "dexscreener_bucket_sells": 67
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 879.7285285423077,
+    "buyers_unique_all": 6,
+    "transfers_total_usd_window_all": 0.0,
+    "transfers_unique_all": 0,
+    "top_spenders_all": [
+      {
+        "address": "0x89b0e1d925619775b8cf18e78acb3e2418585251",
+        "sum_buys_usd_window": 308.2025946024803
+      },
+      {
+        "address": "0xe34533bfb828e6e049d3585eda8832d2efd1e3bb",
+        "sum_buys_usd_window": 126.19670300587042
+      },
+      {
+        "address": "0x9e5756178a245c426692b3992a692383aefa852e",
+        "sum_buys_usd_window": 126.12456323938795
+      },
+      {
+        "address": "0xbb07cbc74ff6d9dc49274cc1af447a045c58d756",
+        "sum_buys_usd_window": 113.26900064942619
+      },
+      {
+        "address": "0x0bebac58dd5730bf2e147fcf5854f8fa6df3fba9",
+        "sum_buys_usd_window": 103.82953995323567
+      },
+      {
+        "address": "0xf193b49db5f1b1cca80b21a49e5f81fde5d6c804",
+        "sum_buys_usd_window": 102.1061270919071
+      }
+    ],
+    "top_transfers_all": []
+  }
+}
