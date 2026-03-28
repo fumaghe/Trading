@@ -1,0 +1,69 @@
+{
+  "ts": "2026-03-28T16:31:52.131169Z",
+  "symbol": "AIO",
+  "token": "0x81a7DA4074b8e0eD51beA40f9dCbDF4d9d4832b4",
+  "price_usd": 0.08421,
+  "main_pair_hint": "0x97620e003c03381EaCBDE7135F28d94303bb5672",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 185,
+    "total_swaps_in_window": 185,
+    "buys_ge_min_usd": 8,
+    "wallet_unici_ge_min_usd": 7,
+    "total_transfers_scanned": 395,
+    "total_transfers_in_window": 395,
+    "transfers_ge_min_usd": 0,
+    "wallet_unici_ge_min_transfers_usd": 0,
+    "candidate_wallets_union": 7,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 7,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 7,
+    "wallet_scartati_old_transfer": 0,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 120,
+    "dexscreener_bucket_sells": 134
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 1553.4215246503834,
+    "buyers_unique_all": 7,
+    "transfers_total_usd_window_all": 0.0,
+    "transfers_unique_all": 0,
+    "top_spenders_all": [
+      {
+        "address": "0x9c97ee995ee9d19f5afbb2bd979c6ede03000e7f",
+        "sum_buys_usd_window": 661.2438224217939
+      },
+      {
+        "address": "0x0f0067cd819cb8f20bda62046daff7a2b5c88280",
+        "sum_buys_usd_window": 295.405690182199
+      },
+      {
+        "address": "0x9999b0cdd35d7f3b281ba02efc0d228486940515",
+        "sum_buys_usd_window": 133.29070534938577
+      },
+      {
+        "address": "0xe066ee1fc83060838ddb4657b93dedddfaa5157b",
+        "sum_buys_usd_window": 123.60074893283907
+      },
+      {
+        "address": "0x4fdd18a22846bc26c1502f92f27f9fba24177888",
+        "sum_buys_usd_window": 122.46103415410005
+      },
+      {
+        "address": "0x20581278f308063c7e07253569ebba8bf439278d",
+        "sum_buys_usd_window": 116.70114183516333
+      },
+      {
+        "address": "0x8aeb9576d29470e659da31842821935b18c31284",
+        "sum_buys_usd_window": 100.71838177490234
+      }
+    ],
+    "top_transfers_all": []
+  }
+}
