@@ -1,0 +1,66 @@
+{
+  "ts": "2026-03-30T12:39:26.240039Z",
+  "symbol": "STO",
+  "token": "0xdAf1695c41327b61B9b9965Ac6A5843A3198cf07",
+  "price_usd": 0.1396,
+  "main_pair_hint": "0x2ad2651A07b4949C0F892CFa27C3C73fb3b020f6",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 38,
+    "total_swaps_in_window": 38,
+    "buys_ge_min_usd": 4,
+    "wallet_unici_ge_min_usd": 3,
+    "total_transfers_scanned": 84,
+    "total_transfers_in_window": 84,
+    "transfers_ge_min_usd": 6,
+    "wallet_unici_ge_min_transfers_usd": 2,
+    "candidate_wallets_union": 5,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 5,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 3,
+    "wallet_scartati_old_transfer": 2,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 38,
+    "dexscreener_bucket_sells": 25
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 997.0574330944307,
+    "buyers_unique_all": 3,
+    "transfers_total_usd_window_all": 38498.83705685809,
+    "transfers_unique_all": 2,
+    "top_spenders_all": [
+      {
+        "address": "0x595db43fb04e1422222ecb327d98ddafdc814241",
+        "sum_buys_usd_window": 748.6636297413852
+      },
+      {
+        "address": "0xa12fe8df021ec5f845ab041b82d09b55b03dd8f1",
+        "sum_buys_usd_window": 147.30400950744163
+      },
+      {
+        "address": "0xa95cbbeedf916491a4e89f7459f447e1b7b6f45e",
+        "sum_buys_usd_window": 101.08979384560388
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0x53f78a071d04224b8e254e243fffc6d9f2f3fa23",
+        "sum_transfers_usd_window": 19249.418528429043,
+        "transfers_count_window": 3,
+        "max_transfer_usd_window": 7797.489109476348
+      },
+      {
+        "address": "0x61de1efd7ba7a2f74e861c896b39c14c74f381e0",
+        "sum_transfers_usd_window": 19249.418528429043,
+        "transfers_count_window": 3,
+        "max_transfer_usd_window": 7797.489109476348
+      }
+    ]
+  }
+}
