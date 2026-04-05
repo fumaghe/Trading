@@ -1,0 +1,61 @@
+{
+  "ts": "2026-04-05T18:41:03.759677Z",
+  "symbol": "IRYS",
+  "token": "0x91152B4Ef635403efBAe860edD0F8c321d7c035d",
+  "price_usd": 0.02018,
+  "main_pair_hint": "0x73de8b8D37fAc1aFe156f6533788A0efF197D636",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 119,
+    "total_swaps_in_window": 119,
+    "buys_ge_min_usd": 5,
+    "wallet_unici_ge_min_usd": 5,
+    "total_transfers_scanned": 218,
+    "total_transfers_in_window": 218,
+    "transfers_ge_min_usd": 0,
+    "wallet_unici_ge_min_transfers_usd": 0,
+    "candidate_wallets_union": 5,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 5,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 5,
+    "wallet_scartati_old_transfer": 0,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 114,
+    "dexscreener_bucket_sells": 114
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 761.2438378440155,
+    "buyers_unique_all": 5,
+    "transfers_total_usd_window_all": 0.0,
+    "transfers_unique_all": 0,
+    "top_spenders_all": [
+      {
+        "address": "0x7da01ad75b806d24ae0f92e6d90482975cc36fac",
+        "sum_buys_usd_window": 261.25755987116054
+      },
+      {
+        "address": "0x4d0cb669c5f3730dc29b170529ebc1eef007e438",
+        "sum_buys_usd_window": 160.38955969131885
+      },
+      {
+        "address": "0x3a920dcac03b9c68e89185ec3d3d6dc96404b4df",
+        "sum_buys_usd_window": 132.8297461858304
+      },
+      {
+        "address": "0x698995c0262a1a70a7695c074e879ecda64877f4",
+        "sum_buys_usd_window": 106.62305840787297
+      },
+      {
+        "address": "0xe4378fe435a08b549b8f0265b5abc3bde2b285cb",
+        "sum_buys_usd_window": 100.1439136878327
+      }
+    ],
+    "top_transfers_all": []
+  }
+}
