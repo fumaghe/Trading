@@ -1,0 +1,65 @@
+{
+  "ts": "2026-04-07T09:00:49.555772Z",
+  "symbol": "BLESS",
+  "token": "0x7C8217517ed4711fe2DECCdFefFE8d906b9Ae11F",
+  "price_usd": 0.005625,
+  "main_pair_hint": "0x49986efbeEdEa3Ab962CA95caF86919860ECc9DB",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 65,
+    "total_swaps_in_window": 65,
+    "buys_ge_min_usd": 7,
+    "wallet_unici_ge_min_usd": 6,
+    "total_transfers_scanned": 123,
+    "total_transfers_in_window": 123,
+    "transfers_ge_min_usd": 0,
+    "wallet_unici_ge_min_transfers_usd": 0,
+    "candidate_wallets_union": 6,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 6,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 6,
+    "wallet_scartati_old_transfer": 0,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 91,
+    "dexscreener_bucket_sells": 81
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 1114.570463436944,
+    "buyers_unique_all": 6,
+    "transfers_total_usd_window_all": 0.0,
+    "transfers_unique_all": 0,
+    "top_spenders_all": [
+      {
+        "address": "0x698995c0262a1a70a7695c074e879ecda64877f4",
+        "sum_buys_usd_window": 402.7904007786798
+      },
+      {
+        "address": "0x7cdd96a3779220436f3614259488995fe7efb743",
+        "sum_buys_usd_window": 202.4510396012832
+      },
+      {
+        "address": "0x907e9681b9ff1cdaccc08f03c5f9a22208bdba8e",
+        "sum_buys_usd_window": 156.3834500933941
+      },
+      {
+        "address": "0xf6d4b3e48602d43b6c000b58f0e26075d21f11a8",
+        "sum_buys_usd_window": 130.2196474943649
+      },
+      {
+        "address": "0xc197b99b758df597e919e135f97f12179540b172",
+        "sum_buys_usd_window": 116.87124523053423
+      },
+      {
+        "address": "0xdd556cf754d0136920636f5385571c302ce9d424",
+        "sum_buys_usd_window": 105.85468023868776
+      }
+    ],
+    "top_transfers_all": []
+  }
+}
