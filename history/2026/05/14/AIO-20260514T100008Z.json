@@ -1,0 +1,90 @@
+{
+  "ts": "2026-05-14T10:00:08.123633Z",
+  "symbol": "AIO",
+  "token": "0x81a7DA4074b8e0eD51beA40f9dCbDF4d9d4832b4",
+  "price_usd": 0.1107,
+  "main_pair_hint": "0x97620e003c03381EaCBDE7135F28d94303bb5672",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 2099,
+    "total_swaps_in_window": 2099,
+    "buys_ge_min_usd": 9,
+    "wallet_unici_ge_min_usd": 8,
+    "total_transfers_scanned": 3600,
+    "total_transfers_in_window": 3600,
+    "transfers_ge_min_usd": 2,
+    "wallet_unici_ge_min_transfers_usd": 2,
+    "candidate_wallets_union": 10,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 10,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 0,
+    "wallet_scartati_old_transfer": 2,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": [
+      "first_tx",
+      "Budget Moralis esaurito: 60/60 chiamate"
+    ],
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 1731,
+    "dexscreener_bucket_sells": 1723
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 4009.848491545595,
+    "buyers_unique_all": 8,
+    "transfers_total_usd_window_all": 6670.878707520001,
+    "transfers_unique_all": 2,
+    "top_spenders_all": [
+      {
+        "address": "0x30fe2e87e3903e3cd682eb53df14fd393f41a61d",
+        "sum_buys_usd_window": 1408.593745563741
+      },
+      {
+        "address": "0xe4e2e0979e9eb674b9c4d98899d43aa3e54876cd",
+        "sum_buys_usd_window": 1156.8586808571
+      },
+      {
+        "address": "0x385564c3561d1afb0a40789f340edfdeaaa7efad",
+        "sum_buys_usd_window": 499.93803919775837
+      },
+      {
+        "address": "0x214e6d6d78eee3d747caa9b2111b749daaae6d8f",
+        "sum_buys_usd_window": 282.99783054392105
+      },
+      {
+        "address": "0x615705d9a2aee564d1b685ccc437c880234d29cf",
+        "sum_buys_usd_window": 258.96631150923594
+      },
+      {
+        "address": "0xec6f031f3a45d07d8ac1ac6a44c2def0a511fa65",
+        "sum_buys_usd_window": 179.9486646133543
+      },
+      {
+        "address": "0xbba7cc0a14fc7203206267bf868dd774e320ca03",
+        "sum_buys_usd_window": 122.54521926048444
+      },
+      {
+        "address": "0x81642ed1c354ede03a350be865bcab8c8ba02efc",
+        "sum_buys_usd_window": 100.0
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0x1ab4973a48dc892cd9971ece8e01dcc7688f8f23",
+        "sum_transfers_usd_window": 3335.4393537600004,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3335.4393537600004,
+        "user_name": "Sadness"
+      },
+      {
+        "address": "0x462728871225e2978d4e1edc6d15983caf8f0d0a",
+        "sum_transfers_usd_window": 3335.4393537600004,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 3335.4393537600004
+      }
+    ]
+  }
+}
