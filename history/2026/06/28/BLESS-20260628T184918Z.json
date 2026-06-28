@@ -1,0 +1,54 @@
+{
+  "ts": "2026-06-28T18:49:18.245075Z",
+  "symbol": "BLESS",
+  "token": "0x7C8217517ed4711fe2DECCdFefFE8d906b9Ae11F",
+  "price_usd": 0.007727,
+  "main_pair_hint": "0x49986efbeEdEa3Ab962CA95caF86919860ECc9DB",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 0,
+    "total_swaps_in_window": 0,
+    "buys_ge_min_usd": 0,
+    "wallet_unici_ge_min_usd": 0,
+    "total_transfers_scanned": 499,
+    "total_transfers_in_window": 499,
+    "transfers_ge_min_usd": 2,
+    "wallet_unici_ge_min_transfers_usd": 2,
+    "candidate_wallets_union": 2,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 2,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 0,
+    "wallet_scartati_old_transfer": 2,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 233,
+    "dexscreener_bucket_sells": 298
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 0.0,
+    "buyers_unique_all": 0,
+    "transfers_total_usd_window_all": 12307.5656,
+    "transfers_unique_all": 2,
+    "top_spenders_all": [],
+    "top_transfers_all": [
+      {
+        "address": "0x4982085c9e2f89f2ecb8131eca71afad896e89cb",
+        "sum_transfers_usd_window": 6153.7828,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 6153.7828,
+        "user_name": "Avicii"
+      },
+      {
+        "address": "0xe308c1f0d43f1e46f22aad2c913b64cf5cffdff5",
+        "sum_transfers_usd_window": 6153.7828,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 6153.7828
+      }
+    ]
+  }
+}
