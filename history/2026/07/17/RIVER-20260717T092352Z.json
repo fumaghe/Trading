@@ -1,0 +1,53 @@
+{
+  "ts": "2026-07-17T09:23:52.961741Z",
+  "symbol": "RIVER",
+  "token": "0xdA7AD9dea9397cffdDAE2F8a052B82f1484252B3",
+  "price_usd": 3.38,
+  "main_pair_hint": "0xb249B6E4AC29301f680963a45FaC7D09779Ef980",
+  "window_minutes": 50,
+  "stats": {
+    "total_swaps_scanned": 176,
+    "total_swaps_in_window": 176,
+    "buys_ge_min_usd": 1,
+    "wallet_unici_ge_min_usd": 1,
+    "total_transfers_scanned": 410,
+    "total_transfers_in_window": 410,
+    "transfers_ge_min_usd": 1,
+    "wallet_unici_ge_min_transfers_usd": 1,
+    "candidate_wallets_union": 2,
+    "eligible_buy_candidates": 0,
+    "eligible_transfer_candidates": 0,
+    "wallet_valutati_topk": 2,
+    "wallet_tenuti": 0,
+    "wallet_new_in_results": 0,
+    "wallet_scartati_old_buy": 1,
+    "wallet_scartati_old_transfer": 1,
+    "wallet_scartati_low_balance_usd": 0,
+    "wallet_scartati_no_price": 0,
+    "budget_exhausted": null,
+    "dexscreener_activity_bucket": "h1",
+    "dexscreener_bucket_buys": 27,
+    "dexscreener_bucket_sells": 33
+  },
+  "agg": {
+    "buyers_total_usd_window_all": 103.21872758249484,
+    "buyers_unique_all": 1,
+    "transfers_total_usd_window_all": 12779.3124583228,
+    "transfers_unique_all": 1,
+    "top_spenders_all": [
+      {
+        "address": "0xec6f031f3a45d07d8ac1ac6a44c2def0a511fa65",
+        "sum_buys_usd_window": 103.21872758249484
+      }
+    ],
+    "top_transfers_all": [
+      {
+        "address": "0xffa8db7b38579e6a2d14f9b347a9ace4d044cd54",
+        "sum_transfers_usd_window": 12779.3124583228,
+        "transfers_count_window": 1,
+        "max_transfer_usd_window": 12779.3124583228,
+        "user_name": "Demon’s Souls"
+      }
+    ]
+  }
+}
